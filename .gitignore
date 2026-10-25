@@ -1,0 +1,36 @@
+# .NET
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+
+# Node / React
+**/node_modules/
+**/dist/
+**/.vite/
+**/coverage/
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+**/appsettings.Local.json
+**/appsettings.Production.json
+*.pfx
+*.p12
+*.key
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary SQL preview
+*.preview.sql

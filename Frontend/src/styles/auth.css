@@ -1,0 +1,493 @@
+/* ==============================================
+   WEBCHAT AUTHENTICATION
+============================================== */
+
+.auth-page {
+  min-height: 100vh;
+  background: #f2f5fb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-shell {
+  width: 100%;
+  max-width: 1180px;
+  min-height: 690px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+  background: #fff;
+  border-radius: 26px;
+  box-shadow: 0 24px 80px rgba(39, 57, 105, 0.10);
+}
+
+/* INTRO PANEL */
+
+.auth-intro {
+  color: #fff;
+  background:
+    radial-gradient(
+      circle at 95% 95%,
+      rgba(147, 197, 253, 0.27),
+      transparent 40%
+    ),
+    linear-gradient(140deg, #123eae, #2563eb 55%, #6546d9);
+  padding: 42px 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  position: relative;
+}
+
+.auth-intro::after {
+  content: "";
+  width: 290px;
+  height: 290px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  position: absolute;
+  bottom: -115px;
+  right: -95px;
+  pointer-events: none;
+}
+
+.brand-mark,
+.mobile-brand,
+.messenger-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.8px;
+}
+
+.brand-symbol {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 15px;
+  background: #fff;
+  color: #2563eb;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+.auth-intro-content {
+  max-width: 410px;
+  position: relative;
+  z-index: 1;
+}
+
+.intro-eyebrow,
+.heading-eyebrow {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.intro-eyebrow {
+  color: #bfdbfe;
+  margin-bottom: 20px;
+}
+
+.auth-intro h1 {
+  font-size: clamp(34px, 3.4vw, 48px);
+  line-height: 1.18;
+  letter-spacing: -1.8px;
+  margin: 0 0 20px;
+}
+
+.auth-intro h1 span {
+  color: #bfdbfe;
+}
+
+.auth-intro-content > p {
+  color: #dbeafe;
+  line-height: 1.8;
+  font-size: 15px;
+}
+
+.intro-feature-list {
+  display: grid;
+  gap: 17px;
+  margin-top: 38px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.intro-feature-list div {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.intro-feature-list span {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.17);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.intro-footer {
+  font-size: 12px;
+  color: #bfdbfe;
+}
+
+/* FORM */
+
+.auth-form-side {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 50px 54px;
+}
+
+.auth-form-box {
+  width: 100%;
+  max-width: 390px;
+}
+
+.mobile-brand {
+  display: none;
+  color: #1e40af;
+  margin-bottom: 30px;
+}
+
+.mobile-brand .brand-symbol {
+  background: #2563eb;
+  color: white;
+}
+
+.form-heading {
+  margin-bottom: 32px;
+}
+
+.heading-eyebrow {
+  color: #2563eb;
+  margin-bottom: 10px;
+}
+
+.form-heading h2 {
+  font-size: 33px;
+  letter-spacing: -1.2px;
+  margin: 0 0 10px;
+  color: #0f172a;
+}
+
+.form-heading p {
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.form-field {
+  margin-bottom: 19px;
+}
+
+.form-field label {
+  display: block;
+  margin-bottom: 9px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.form-field input {
+  width: 100%;
+  height: 49px;
+  padding: 0 15px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: #f8fafc;
+  color: #0f172a;
+  outline: none;
+  transition: border-color .2s, box-shadow .2s;
+}
+
+.form-field input::placeholder {
+  color: #94a3b8;
+}
+
+.form-field input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, .1);
+  background: white;
+}
+
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 65px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auth-submit {
+  width: 100%;
+  min-height: 50px;
+  margin-top: 9px;
+  padding: 12px;
+  background: #2563eb;
+  border: none;
+  border-radius: 11px;
+  color: white;
+  font-weight: 700;
+  font-size: 15px;
+  transition: background .2s, transform .2s;
+}
+
+.auth-submit:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.auth-submit:active:not(:disabled) {
+  transform: scale(.99);
+}
+
+.auth-submit:disabled {
+  opacity: .65;
+}
+
+.auth-error,
+.auth-success {
+  padding: 13px 15px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.auth-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+}
+
+.auth-success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #15803d;
+}
+
+.auth-divider {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin: 26px 0;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: #e2e8f0;
+}
+
+.auth-bottom-text {
+  text-align: center;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.6;
+  margin-top: 26px;
+}
+
+.auth-bottom-text a {
+  color: #2563eb;
+  font-weight: 750;
+}
+
+.auth-bottom-text a:hover {
+  text-decoration: underline;
+}
+
+.auth-demo-note {
+  text-align: center;
+  color: #94a3b8;
+  font-size: 11px;
+  margin-top: 28px;
+}
+
+/* MESSENGER PLACEHOLDER */
+
+.messenger-placeholder {
+  min-height: 100vh;
+  background: #f6f8fc;
+}
+
+.messenger-topbar {
+  min-height: 76px;
+  padding: 15px 5%;
+  background: white;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.messenger-logo {
+  color: #1e40af;
+}
+
+.messenger-logo .brand-symbol {
+  background: #2563eb;
+  color: white;
+}
+
+.logout-button {
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #334155;
+  padding: 11px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.logout-button:hover {
+  background: #f1f5f9;
+}
+
+.welcome-panel {
+  width: min(90%, 650px);
+  margin: 90px auto;
+  padding: 45px;
+  border-radius: 22px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(30, 41, 59, .04);
+}
+
+.welcome-icon {
+  width: 75px;
+  height: 75px;
+  margin: 0 auto 20px;
+  border-radius: 22px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: #dbeafe;
+  color: #2563eb;
+  font-size: 38px;
+}
+
+.welcome-panel h1 {
+  color: #0f172a;
+  font-size: 27px;
+}
+
+.welcome-panel > p {
+  color: #64748b;
+  line-height: 1.7;
+}
+
+.profile-summary {
+  display: grid;
+  gap: 12px;
+  margin-top: 30px;
+  text-align: left;
+}
+
+.profile-summary > div {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 15px;
+  background: #f8fafc;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+.profile-summary span {
+  color: #64748b;
+}
+
+.profile-summary strong {
+  overflow-wrap: anywhere;
+}
+
+.welcome-note {
+  margin-top: 25px;
+  padding: 15px;
+  background: #eff6ff;
+  border-radius: 11px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1d4ed8;
+}
+
+/* RESPONSIVE */
+
+@media (max-width: 850px) {
+  .auth-page {
+    padding: 0;
+    background: white;
+  }
+
+  .auth-shell {
+    min-height: 100vh;
+    display: block;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .auth-intro {
+    display: none;
+  }
+
+  .auth-form-side {
+    min-height: 100vh;
+    padding: 45px 25px;
+  }
+
+  .mobile-brand {
+    display: flex;
+  }
+
+  .form-heading h2 {
+    font-size: 29px;
+  }
+}
+
+@media (max-width: 480px) {
+  .auth-form-side {
+    padding: 32px 22px;
+  }
+
+  .welcome-panel {
+    padding: 25px 20px;
+    margin: 35px auto;
+  }
+
+  .messenger-topbar {
+    padding: 12px 20px;
+  }
+}
