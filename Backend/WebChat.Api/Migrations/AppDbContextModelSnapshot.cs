@@ -22,6 +22,153 @@ namespace WebChat.Api.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("WebChat.Api.Models.FriendAuditLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("EntityId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(40)");
+
+                    b.Property<string>("MetadataJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<Guid>("TargetUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EntityId")
+                        .HasDatabaseName("IX_FriendAuditLogs_Entity");
+
+                    b.HasIndex("ActorUserId", "OccurredAtUtc", "Id")
+                        .IsDescending(false, true, false)
+                        .HasDatabaseName("IX_FriendAuditLogs_Actor");
+
+                    b.HasIndex("TargetUserId", "OccurredAtUtc", "Id")
+                        .IsDescending(false, true, false)
+                        .HasDatabaseName("IX_FriendAuditLogs_Target");
+
+                    b.ToTable("FriendAuditLogs", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_FriendAuditLogs_EventType", "[EventType] IN (\r\n    'FriendRequest.Sent',\r\n    'FriendRequest.Accepted',\r\n    'FriendRequest.Rejected',\r\n    'FriendRequest.Cancelled',\r\n    'Friendship.Created',\r\n    'Friendship.Removed',\r\n    'UserBlock.Created',\r\n    'UserBlock.Removed'\r\n)");
+
+                            t.HasCheckConstraint("CK_FriendAuditLogs_MetadataJson", "[MetadataJson] IS NULL OR ISJSON([MetadataJson]) = 1");
+                        });
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.FriendRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("CancelledAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<Guid>("PairHighId")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("uniqueidentifier")
+                        .HasComputedColumnSql("CASE\r\n    WHEN [SenderId] < [ReceiverId]\r\n    THEN [ReceiverId]\r\n    ELSE [SenderId]\r\nEND", true);
+
+                    b.Property<Guid>("PairLowId")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("uniqueidentifier")
+                        .HasComputedColumnSql("CASE\r\n    WHEN [SenderId] < [ReceiverId]\r\n    THEN [SenderId]\r\n    ELSE [ReceiverId]\r\nEND", true);
+
+                    b.Property<Guid>("ReceiverId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("RespondedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<Guid>("SenderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PairLowId", "PairHighId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_FriendRequests_PendingPair")
+                        .HasFilter("[Status] = 0");
+
+                    b.HasIndex("ReceiverId", "Status", "CreatedAtUtc", "Id")
+                        .IsDescending(false, false, true, false)
+                        .HasDatabaseName("IX_FriendRequests_Received");
+
+                    b.HasIndex("SenderId", "Status", "CreatedAtUtc", "Id")
+                        .IsDescending(false, false, true, false)
+                        .HasDatabaseName("IX_FriendRequests_Sent");
+
+                    b.ToTable("FriendRequests", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_FriendRequests_DifferentUsers", "[SenderId] <> [ReceiverId]");
+
+                            t.HasCheckConstraint("CK_FriendRequests_Status", "[Status] IN (0, 1, 2, 3)");
+
+                            t.HasCheckConstraint("CK_FriendRequests_StatusDates", "(\r\n    (\r\n        [Status] = 0\r\n        AND [RespondedAtUtc] IS NULL\r\n        AND [CancelledAtUtc] IS NULL\r\n    )\r\n    OR\r\n    (\r\n        [Status] IN (1, 2)\r\n        AND [RespondedAtUtc] IS NOT NULL\r\n        AND [CancelledAtUtc] IS NULL\r\n        AND [RespondedAtUtc] >= [CreatedAtUtc]\r\n    )\r\n    OR\r\n    (\r\n        [Status] = 3\r\n        AND [RespondedAtUtc] IS NULL\r\n        AND [CancelledAtUtc] IS NOT NULL\r\n        AND [CancelledAtUtc] >= [CreatedAtUtc]\r\n    )\r\n)");
+                        });
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.Friendship", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<Guid>("PairHighId")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("uniqueidentifier")
+                        .HasComputedColumnSql("CASE\r\n    WHEN [UserAId] < [UserBId]\r\n    THEN [UserBId]\r\n    ELSE [UserAId]\r\nEND", true);
+
+                    b.Property<Guid>("PairLowId")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("uniqueidentifier")
+                        .HasComputedColumnSql("CASE\r\n    WHEN [UserAId] < [UserBId]\r\n    THEN [UserAId]\r\n    ELSE [UserBId]\r\nEND", true);
+
+                    b.Property<Guid>("UserAId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("UserBId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserAId")
+                        .HasDatabaseName("IX_Friendships_UserAId");
+
+                    b.HasIndex("UserBId")
+                        .HasDatabaseName("IX_Friendships_UserBId");
+
+                    b.HasIndex("PairLowId", "PairHighId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Friendships_UserPair");
+
+                    b.ToTable("Friendships", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Friendships_DifferentUsers", "[UserAId] <> [UserBId]");
+                        });
+                });
+
             modelBuilder.Entity("WebChat.Api.Models.Permission", b =>
                 {
                     b.Property<Guid>("Id")
@@ -217,6 +364,35 @@ namespace WebChat.Api.Migrations
                     b.ToTable("Users", (string)null);
                 });
 
+            modelBuilder.Entity("WebChat.Api.Models.UserBlock", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BlockedId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BlockerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BlockedId", "BlockerId")
+                        .HasDatabaseName("IX_UserBlocks_Blocked_Blocker");
+
+                    b.HasIndex("BlockerId", "BlockedId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_UserBlocks_Blocker_Blocked");
+
+                    b.ToTable("UserBlocks", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_UserBlocks_DifferentUsers", "[BlockerId] <> [BlockedId]");
+                        });
+                });
+
             modelBuilder.Entity("WebChat.Api.Models.UserRole", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -274,6 +450,51 @@ namespace WebChat.Api.Migrations
                     b.ToTable("UserSessions", (string)null);
                 });
 
+            modelBuilder.Entity("WebChat.Api.Models.FriendAuditLog", b =>
+                {
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("TargetUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.FriendRequest", b =>
+                {
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("ReceiverId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("SenderId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.Friendship", b =>
+                {
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserAId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserBId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("WebChat.Api.Models.RefreshToken", b =>
                 {
                     b.HasOne("WebChat.Api.Models.UserSession", "Session")
@@ -310,6 +531,21 @@ namespace WebChat.Api.Migrations
                     b.Navigation("Permission");
 
                     b.Navigation("Role");
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.UserBlock", b =>
+                {
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("BlockedId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("BlockerId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("WebChat.Api.Models.UserRole", b =>

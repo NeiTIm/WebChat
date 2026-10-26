@@ -12,4 +12,11 @@ public interface IUserService
         Guid userId,
         UpdateUserProfileRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<UserSearchResponse> SearchUsersAsync(
+        Guid currentUserId,
+        string query,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default);
 }

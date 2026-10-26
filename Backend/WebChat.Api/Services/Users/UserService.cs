@@ -14,6 +14,10 @@ public sealed class UserService : IUserService
         _dbContext = dbContext;
     }
 
+    // =====================================================
+    // GET MY PROFILE - GIỮ NGUYÊN
+    // =====================================================
+
     public async Task<UserProfileResponse?> GetMyProfileAsync(
         Guid userId,
         CancellationToken cancellationToken = default)
@@ -24,13 +28,12 @@ public sealed class UserService : IUserService
                 x => x.Id == userId && x.IsActive,
                 cancellationToken);
 
-        if (user is null)
-        {
-            return null;
-        }
-
-        return MapToResponse(user);
+        return user is null ? null : MapToResponse(user);
     }
+
+    // =====================================================
+    // UPDATE MY PROFILE - GIỮ NGUYÊN
+    // =====================================================
 
     public async Task<UserProfileResponse?> UpdateMyProfileAsync(
         Guid userId,
@@ -81,21 +84,125 @@ public sealed class UserService : IUserService
         }
 
         user.DisplayName = displayName;
-
-        user.Bio = string.IsNullOrWhiteSpace(bio)
-            ? null
-            : bio;
-
+        user.Bio = string.IsNullOrWhiteSpace(bio) ? null : bio;
         user.AvatarUrl = string.IsNullOrWhiteSpace(avatarUrl)
-            ? null
-            : avatarUrl;
-
+            ? null : avatarUrl;
         user.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return MapToResponse(user);
     }
+
+    // =====================================================
+    // USER DISCOVERY + LIVE SEARCH
+    // =====================================================
+
+    public async Task<UserSearchResponse> SearchUsersAsync(
+        Guid currentUserId,
+        string query,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        var keyword = (query ?? string.Empty).Trim();
+
+        // Không nhập gì => hiển thị danh sách mặc định.
+        // Có từ khóa => lọc ngay cả với một ký tự.
+        if (keyword.Length > 80)
+        {
+            throw new ArgumentException(
+                "Từ khóa không được vượt quá 80 ký tự.");
+        }
+
+        if (page < 1 || page > 100000)
+        {
+            throw new ArgumentException(
+                "Số trang không hợp lệ.");
+        }
+
+        if (pageSize is < 20 or > 50)
+        {
+            throw new ArgumentException(
+                "PageSize phải nằm trong khoảng 20 đến 50.");
+        }
+
+        // Luôn chỉ lấy user Active và loại trừ chính mình.
+        IQueryable<User> usersQuery = _dbContext.Users
+            .AsNoTracking()
+            .Where(x =>
+                x.IsActive &&
+                x.Id != currentUserId);
+
+        // Chỉ thêm điều kiện LIKE khi có từ khóa.
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            var escapedKeyword = EscapeLike(keyword);
+            var pattern = $"%{escapedKeyword}%";
+
+            usersQuery = usersQuery.Where(x =>
+                EF.Functions.Like(
+                    x.Username,
+                    pattern,
+                    "\\") ||
+                EF.Functions.Like(
+                    x.DisplayName,
+                    pattern,
+                    "\\"));
+        }
+
+        var total = await usersQuery.CountAsync(
+            cancellationToken);
+
+        var items = await usersQuery
+            .OrderBy(x => x.DisplayName)
+            .ThenBy(x => x.Username)
+            .ThenBy(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x => new UserSearchItemResponse
+            {
+                Id = x.Id,
+                Username = x.Username,
+                DisplayName = x.DisplayName,
+                AvatarUrl = x.AvatarUrl,
+                Bio = x.Bio
+            })
+            .ToListAsync(cancellationToken);
+
+        var totalPages = total == 0
+            ? 0
+            : (int)Math.Ceiling(
+                (double)total / pageSize);
+
+        return new UserSearchResponse
+        {
+            Items = items,
+            Page = page,
+            PageSize = pageSize,
+            Total = total,
+            TotalPages = totalPages,
+            HasPreviousPage = page > 1,
+            HasNextPage = page < totalPages
+        };
+    }
+
+    // =====================================================
+    // SQL LIKE ESCAPING
+    // =====================================================
+
+    private static string EscapeLike(string value)
+    {
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("%", "\\%")
+            .Replace("_", "\\_")
+            .Replace("[", "\\[");
+    }
+
+    // =====================================================
+    // PROFILE RESPONSE MAPPER - GIỮ NGUYÊN
+    // =====================================================
 
     private static UserProfileResponse MapToResponse(User user)
     {

@@ -18,7 +18,10 @@ public sealed class UsersController : ControllerBase
         _userService = userService;
     }
 
-    // GET /api/users/me
+    // =====================================================
+    // GET MY PROFILE
+    // =====================================================
+
     [HttpGet("me")]
     public async Task<ActionResult<UserProfileResponse>> GetMe(
         CancellationToken cancellationToken)
@@ -29,7 +32,8 @@ public sealed class UsersController : ControllerBase
         }
 
         var profile = await _userService.GetMyProfileAsync(
-            userId, cancellationToken);
+            userId,
+            cancellationToken);
 
         if (profile is null)
         {
@@ -43,7 +47,10 @@ public sealed class UsersController : ControllerBase
         return Ok(profile);
     }
 
-    // PUT /api/users/me
+    // =====================================================
+    // UPDATE MY PROFILE
+    // =====================================================
+
     [HttpPut("me")]
     public async Task<ActionResult<UserProfileResponse>> UpdateMe(
         [FromBody] UpdateUserProfileRequest request,
@@ -81,6 +88,54 @@ public sealed class UsersController : ControllerBase
             });
         }
     }
+
+    // =====================================================
+    // USER DISCOVERY + SEARCH
+    //
+    // GET /api/users/search?page=1&pageSize=20
+    // GET /api/users/search?q=ngan&page=1&pageSize=20
+    // GET /api/users/search?q=t&page=1&pageSize=20
+    //
+    // q empty: show other active users
+    // q present: filter by username/display name
+    // =====================================================
+
+    [HttpGet("search")]
+    public async Task<ActionResult<UserSearchResponse>> Search(
+        [FromQuery] string? q = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var result = await _userService.SearchUsersAsync(
+                userId,
+                q ?? string.Empty,
+                page,
+                pageSize,
+                cancellationToken);
+
+            return Ok(result);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new
+            {
+                success = false,
+                message = ex.Message
+            });
+        }
+    }
+
+    // =====================================================
+    // JWT USER ID
+    // =====================================================
 
     private bool TryGetUserId(out Guid userId)
     {

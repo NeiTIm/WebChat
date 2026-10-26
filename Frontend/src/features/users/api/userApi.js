@@ -14,4 +14,25 @@ export const userApi = {
 
     return response.data;
   },
+
+  async searchUsers({
+    query,
+    page = 1,
+    pageSize = 20,
+    signal,
+  }) {
+    const response = await axiosClient.get(
+      "/api/users/search",
+      {
+        params: {
+          q: query,
+          page,
+          pageSize,
+        },
+        signal,
+      }
+    );
+
+    return response.data;
+  },
 };

@@ -1,0 +1,453 @@
+/* =====================================================
+   WEBCHAT — FRIENDS UI ENHANCEMENT
+   STEP 4.5.3
+===================================================== */
+
+.friends-enhanced-page {
+  min-height: 100vh;
+}
+
+/* =====================================================
+   OVERVIEW
+===================================================== */
+
+.friends-overview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+  margin-bottom: 22px;
+  background: #eff6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 16px;
+}
+
+.friends-overview-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.friends-overview-text strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 15px;
+  font-weight: 750;
+  color: #1e3a8a;
+}
+
+.friends-overview-text p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.friends-overview-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+.friends-overview-link,
+.friends-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 39px;
+  padding: 9px 13px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    transform 150ms ease;
+}
+
+.friends-overview-link {
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  background: #ffffff;
+}
+
+.friends-refresh-button {
+  border: 1px solid #dbe4f0;
+  color: #334155;
+  background: #ffffff;
+}
+
+.friends-overview-link:hover,
+.friends-refresh-button:hover:not(:disabled) {
+  background: #f8fafc;
+  transform: translateY(-1px);
+}
+
+.friends-refresh-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* =====================================================
+   TABS + COUNT BADGE
+===================================================== */
+
+.friends-enhanced-tabs {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.friends-enhanced-tabs .friends-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.friends-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.friends-tab.active .friends-count-badge {
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.friends-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+/* =====================================================
+   PANEL HEADER
+===================================================== */
+
+.friends-panel-subtitle {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+/* =====================================================
+   FRIEND CARD
+===================================================== */
+
+.friends-enhanced-card {
+  min-width: 0;
+  transition:
+    background-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.friends-enhanced-card:hover {
+  background: #f8fafc;
+}
+
+.friends-enhanced-card .friends-user-info {
+  min-width: 0;
+}
+
+.friends-enhanced-card .friends-user-info h3 {
+  overflow-wrap: anywhere;
+}
+
+.friends-enhanced-card .friends-user-info p {
+  overflow-wrap: anywhere;
+}
+
+.friends-mini-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 7px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.friends-mini-status.is-friend {
+  color: #15803d;
+  background: #dcfce7;
+}
+
+.friends-mini-status.is-received {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.friends-mini-status.is-pending {
+  color: #a16207;
+  background: #fef9c3;
+}
+
+.friends-mini-status.is-blocked {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.friends-enhanced-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.friends-enhanced-actions .friends-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  white-space: nowrap;
+}
+
+.friends-enhanced-actions .friends-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* =====================================================
+   ALERTS
+===================================================== */
+
+.friends-enhanced-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.friends-enhanced-alert > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.friends-dismiss-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 5px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.friends-dismiss-button:hover {
+  background: rgb(0 0 0 / 5%);
+}
+
+/* =====================================================
+   EMPTY STATE
+===================================================== */
+
+.friends-enhanced-empty {
+  padding: 55px 24px;
+}
+
+.friends-enhanced-empty h3 {
+  margin-bottom: 8px;
+}
+
+.friends-enhanced-empty > p {
+  max-width: 390px;
+  margin-inline: auto;
+  line-height: 1.6;
+}
+
+.friends-empty-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 11px 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.friends-empty-link:hover {
+  background: #dbeafe;
+}
+
+/* =====================================================
+   PAGINATION
+===================================================== */
+
+.friends-enhanced-footer {
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.friends-enhanced-footer .friends-pagination {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.friends-enhanced-footer .friends-pagination button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+}
+
+.friends-enhanced-footer .friends-pagination button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* =====================================================
+   CONFIRM MODAL
+===================================================== */
+
+.friends-enhanced-modal {
+  max-width: 430px;
+  width: calc(100% - 28px);
+}
+
+.friends-modal-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 15px;
+  border-radius: 14px;
+}
+
+.friends-modal-symbol.success {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.friends-modal-symbol.danger {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.friends-modal-note {
+  padding: 11px 13px;
+  background: #f1f5f9;
+  border-radius: 9px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.friends-enhanced-modal .friends-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+@keyframes friends-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.friends-spinning {
+  animation: friends-spin 900ms linear infinite;
+}
+
+/* =====================================================
+   RESPONSIVE
+===================================================== */
+
+@media (max-width: 760px) {
+  .friends-overview {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .friends-overview-actions {
+    width: 100%;
+  }
+
+  .friends-overview-link,
+  .friends-refresh-button {
+    flex: 1;
+  }
+
+  .friends-enhanced-card {
+    flex-wrap: wrap;
+  }
+
+  .friends-enhanced-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .friends-enhanced-actions .friends-action {
+    flex: 1;
+    min-width: 120px;
+  }
+}
+
+@media (max-width: 480px) {
+  .friends-enhanced-tabs {
+    justify-content: flex-start;
+  }
+
+  .friends-enhanced-tabs .friends-tab {
+    gap: 5px;
+    padding-inline: 10px;
+    font-size: 12px;
+  }
+
+  .friends-count-badge {
+    min-width: 19px;
+    height: 19px;
+    font-size: 10px;
+  }
+
+  .friends-enhanced-actions .friends-action {
+    min-width: 0;
+    font-size: 12px;
+  }
+
+  .friends-panel-header {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .friends-enhanced-empty {
+    padding: 38px 16px;
+  }
+
+  .friends-enhanced-modal .friends-modal-actions {
+    flex-direction: column-reverse;
+  }
+
+  .friends-enhanced-modal .friends-modal-actions button {
+    width: 100%;
+  }
+}

@@ -9,6 +9,7 @@ using WebChat.Api.Models;
 using WebChat.Api.Options;
 using WebChat.Api.Services.Auth;
 using WebChat.Api.Services.Users;
+using WebChat.Api.Services.Friends;
 var builder = WebApplication.CreateBuilder(args);
 
 // =====================================================
@@ -212,6 +213,16 @@ builder.Services.AddSingleton<
     IJwtTokenService,
     JwtTokenService>();
 builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddScoped<
+    IFriendRequestService,
+    FriendRequestService>();
+// Bước 4.4 - Friendship & Block Management
+builder.Services.AddScoped<
+    IFriendRelationshipService,
+    FriendRelationshipService>();
+builder.Services.AddScoped<
+IFriendStatusService,
+FriendStatusService>();
 // =====================================================
 // CORS - REACT
 // =====================================================

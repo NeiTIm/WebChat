@@ -32,10 +32,21 @@ public sealed class AppDbContext : DbContext
     public DbSet<UserSession> UserSessions
         => Set<UserSession>();
 
-    // ================================================
-    // ENTITY CONFIGURATIONS
-    // ================================================
+    // =====================================================
+    // FRIENDS MANAGEMENT - PHASE 4
+    // =====================================================
 
+    public DbSet<FriendRequest> FriendRequests
+        => Set<FriendRequest>();
+
+    public DbSet<Friendship> Friendships
+        => Set<Friendship>();
+
+    public DbSet<UserBlock> UserBlocks
+        => Set<UserBlock>();
+
+    public DbSet<FriendAuditLog> FriendAuditLogs
+        => Set<FriendAuditLog>();
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
     {

@@ -1,9 +1,12 @@
 import { useState } from "react";
-import { MessageCircle, MessagesSquare, X } from "lucide-react";
+import {
+  MessageCircle,
+  MessagesSquare,
+  X,
+} from "lucide-react";
 
 import { useAuth } from "../auth/hooks/useAuth";
 
-import MessengerSidebar from "./components/MessengerSidebar";
 import ConversationList from "./components/ConversationList";
 import ChatHeader from "./components/ChatHeader";
 
@@ -22,26 +25,27 @@ function getCurrentTime() {
 }
 
 export default function MessengerPage() {
-  const {
-    user,
-    logout,
-    isLoggingOut,
-  } = useAuth();
+  const { user } = useAuth();
 
   const [conversations, setConversations] = useState(
     mockConversations
   );
 
   const [selectedId, setSelectedId] = useState(null);
+
   const [mobileChatOpen, setMobileChatOpen] =
     useState(false);
 
   const [notice, setNotice] = useState("");
-  const [logoutError, setLogoutError] = useState("");
 
   const selectedConversation =
-    conversations.find((item) => item.id === selectedId) ||
-    null;
+    conversations.find(
+      (item) => item.id === selectedId
+    ) || null;
+
+  // =====================================================
+  // CONVERSATION SELECTION
+  // =====================================================
 
   function handleSelectConversation(id) {
     setSelectedId(id);
@@ -51,7 +55,10 @@ export default function MessengerPage() {
     setConversations((previous) =>
       previous.map((conversation) =>
         conversation.id === id
-          ? { ...conversation, unreadCount: 0 }
+          ? {
+              ...conversation,
+              unreadCount: 0,
+            }
           : conversation
       )
     );
@@ -62,8 +69,14 @@ export default function MessengerPage() {
   }
 
   function handleUnavailable(feature) {
-    setNotice(`${feature} sẽ được triển khai ở bước tiếp theo.`);
+    setNotice(
+      `${feature} sẽ được triển khai ở bước tiếp theo.`
+    );
   }
+
+  // =====================================================
+  // SEND MOCK MESSAGE - GIỮ NGUYÊN
+  // =====================================================
 
   function handleSendMessage(content) {
     if (!selectedId) return;
@@ -85,33 +98,21 @@ export default function MessengerPage() {
           ...conversation,
           lastMessage: content,
           lastMessageTime: message.time,
-          messages: [...conversation.messages, message],
+          messages: [
+            ...conversation.messages,
+            message,
+          ],
         };
       })
     );
   }
 
-  async function handleLogout() {
-    setLogoutError("");
-
-    try {
-      await logout();
-    } catch {
-      setLogoutError(
-        "Không thể đăng xuất trên máy chủ. Vui lòng thử lại."
-      );
-    }
-  }
+  // =====================================================
+  // RENDER
+  // =====================================================
 
   return (
     <main className="messenger-app">
-      <MessengerSidebar
-        user={user}
-        onLogout={handleLogout}
-        isLoggingOut={isLoggingOut}
-        onUnavailable={handleUnavailable}
-      />
-
       <div
         className={`messenger-conversation-column ${
           mobileChatOpen ? "mobile-hidden" : ""
@@ -161,7 +162,8 @@ export default function MessengerPage() {
             <h2>Chào mừng đến WebChat</h2>
 
             <p>
-              Xin chào, {user?.displayName || user?.username}!
+              Xin chào,{" "}
+              {user?.displayName || user?.username}!
               <br />
               Chọn một cuộc trò chuyện để bắt đầu.
             </p>
@@ -174,16 +176,16 @@ export default function MessengerPage() {
         )}
       </section>
 
-      {(notice || logoutError) && (
-        <div className="messenger-toast" role="status">
-          <span>{logoutError || notice}</span>
+      {notice && (
+        <div
+          className="messenger-toast"
+          role="status"
+        >
+          <span>{notice}</span>
 
           <button
             type="button"
-            onClick={() => {
-              setNotice("");
-              setLogoutError("");
-            }}
+            onClick={() => setNotice("")}
             aria-label="Đóng thông báo"
           >
             <X size={17} />
