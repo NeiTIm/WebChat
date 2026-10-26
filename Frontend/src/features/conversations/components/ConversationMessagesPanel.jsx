@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+
 import {
   AlertCircle,
   LoaderCircle,
@@ -16,18 +17,34 @@ import {
 
 import MessageList from "../../messages/components/MessageList";
 import MessageInput from "../../messages/components/MessageInput";
+import MessageReadSync from "../../messages/components/MessageReadSync";
+
 import { useChatRealtime } from "../../realtime/hooks/useChatRealtime";
+import { useConversationStatus } from "../hooks/useConversationStatus";
+
 import { getConversationById } from "../api/conversationApi";
-import { reconcileConversationMessages } from "../../realtime/api/messageReconciliation";
+
+import {
+  reconcileConversationMessages,
+} from "../../realtime/api/messageReconciliation";
+
 import {
   createClientMessageId,
   getConversationMessages,
   getMessageApiError,
 } from "../../messages/api/messageApi";
 
+// =====================================================
+// CONFIGURATION
+// =====================================================
+
 const PAGE_SIZE = 20;
 const MAX_CONFIRMED_CACHE = 100;
 const PERMISSION_REFRESH_DELAY = 100;
+
+// =====================================================
+// HELPERS
+// =====================================================
 
 function normalizeId(value) {
   return String(value ?? "").trim().toLowerCase();
@@ -35,8 +52,12 @@ function normalizeId(value) {
 
 function formatTime(value) {
   if (!value) return "";
+
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
 
   return new Intl.DateTimeFormat("vi-VN", {
     hour: "2-digit",
@@ -47,12 +68,15 @@ function formatTime(value) {
 function toMessageViewModel(message, currentUserId) {
   return {
     ...message,
+
     sender:
       normalizeId(message.senderId) ===
       normalizeId(currentUserId)
         ? "me"
         : "other",
+
     time: formatTime(message.createdAtUtc),
+
     content: message.recalledAtUtc
       ? "Tin nhắn đã được thu hồi"
       : message.content || "",
@@ -67,19 +91,29 @@ function mergeMessages(previous, additions) {
     if (!message?.id) continue;
 
     const id = normalizeId(message.id);
+
     const clientKey = message.clientMessageId
       ? `${normalizeId(message.senderId)}:${normalizeId(
           message.clientMessageId
         )}`
       : null;
 
-    if (clientKey && clientMessageKeys.has(clientKey)) {
+    if (
+      clientKey &&
+      clientMessageKeys.has(clientKey)
+    ) {
       const oldId = clientMessageKeys.get(clientKey);
-      if (oldId !== id) byId.delete(oldId);
+
+      if (oldId !== id) {
+        byId.delete(oldId);
+      }
     }
 
     byId.set(id, message);
-    if (clientKey) clientMessageKeys.set(clientKey, id);
+
+    if (clientKey) {
+      clientMessageKeys.set(clientKey, id);
+    }
   }
 
   return [...byId.values()].sort(
@@ -87,25 +121,35 @@ function mergeMessages(previous, additions) {
   );
 }
 
-function validateMessagesResponse(result, conversationId) {
+function validateMessagesResponse(
+  result,
+  conversationId
+) {
   if (
     !result ||
     !Array.isArray(result.items) ||
     normalizeId(result.conversationId) !==
       normalizeId(conversationId)
   ) {
-    throw new Error("Dữ liệu lịch sử tin nhắn không hợp lệ.");
+    throw new Error(
+      "Dữ liệu lịch sử tin nhắn không hợp lệ."
+    );
   }
 }
 
-function validateConversationResponse(result, conversationId) {
+function validateConversationResponse(
+  result,
+  conversationId
+) {
   if (
     !result ||
     normalizeId(result.id) !==
       normalizeId(conversationId) ||
     typeof result.canSendMessage !== "boolean"
   ) {
-    throw new Error("Dữ liệu quyền hội thoại không hợp lệ.");
+    throw new Error(
+      "Dữ liệu quyền hội thoại không hợp lệ."
+    );
   }
 }
 
@@ -122,8 +166,10 @@ function isValidMessage(message, conversationId) {
 }
 
 function isCanceled(error, controller) {
-  return controller.signal.aborted ||
-    error?.code === "ERR_CANCELED";
+  return (
+    controller.signal.aborted ||
+    error?.code === "ERR_CANCELED"
+  );
 }
 
 function getErrorMessage(error, fallback) {
@@ -146,12 +192,36 @@ function isSameClientMessage(
   );
 }
 
+// =====================================================
+// CONVERSATION MESSAGES PANEL
+// =====================================================
+
 export default function ConversationMessagesPanel({
   conversation,
   currentUserId,
   onUnavailable = () => {},
 }) {
   const conversationId = conversation.id;
+
+  // =====================================================
+  // 5.8E3 - CONVERSATION STATUS STORE
+  // =====================================================
+
+  const {
+    getConversationStatus,
+    refreshConversation,
+  } = useConversationStatus();
+
+  const conversationStatus =
+    getConversationStatus(conversationId);
+
+  // Delivered ACK thuộc GlobalDeliverySync.
+  // Read ACK thuộc MessageReadSync.
+  // Panel chỉ phối hợp các component.
+
+  // =====================================================
+  // SIGNALR
+  // =====================================================
 
   const {
     subscribe,
@@ -174,32 +244,52 @@ export default function ConversationMessagesPanel({
     nextBeforeSequence: null,
   });
 
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [olderError, setOlderError] = useState("");
-  const [refreshing, setRefreshing] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState("");
-  const [manualSyncKey, setManualSyncKey] = useState(0);
+  const [loadingOlder, setLoadingOlder] =
+    useState(false);
+
+  const [olderError, setOlderError] =
+    useState("");
+
+  const [refreshing, setRefreshing] =
+    useState(false);
+
+  const [syncing, setSyncing] =
+    useState(false);
+
+  const [syncError, setSyncError] =
+    useState("");
+
+  const [manualSyncKey, setManualSyncKey] =
+    useState(0);
 
   // =====================================================
-  // SENDING
+  // SEND / RETRY
   // =====================================================
 
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState("");
-  const [retryMessage, setRetryMessage] = useState(null);
+  const [sending, setSending] =
+    useState(false);
+
+  const [sendError, setSendError] =
+    useState("");
+
+  const [retryMessage, setRetryMessage] =
+    useState(null);
 
   // =====================================================
   // PERMISSION
   // =====================================================
 
   const [permission, setPermission] = useState({
-    canSendMessage: conversation.canSendMessage === true,
-    cannotSendReason: conversation.cannotSendReason || "",
+    canSendMessage:
+      conversation.canSendMessage === true,
+
+    cannotSendReason:
+      conversation.cannotSendReason || "",
   });
 
   const [checkingPermission, setCheckingPermission] =
     useState(false);
+
   const [permissionError, setPermissionError] =
     useState("");
 
@@ -208,6 +298,7 @@ export default function ConversationMessagesPanel({
   // =====================================================
 
   const mountedRef = useRef(false);
+
   const sendingRef = useRef(false);
   const olderBusyRef = useRef(false);
   const refreshingRef = useRef(false);
@@ -215,22 +306,29 @@ export default function ConversationMessagesPanel({
   const olderControllerRef = useRef(null);
   const refreshControllerRef = useRef(null);
   const permissionControllerRef = useRef(null);
+
   const permissionGenerationRef = useRef(0);
   const permissionRefreshTimerRef = useRef(null);
 
   const pendingMessageRef = useRef(null);
-  const confirmedMessagesRef = useRef(new Map());
+
+  const confirmedMessagesRef = useRef(
+    new Map()
+  );
+
   const historySnapshotRef = useRef(history);
   historySnapshotRef.current = history;
+
   const syncVersionSeenRef = useRef(0);
 
   // =====================================================
-  // CONFIRMATIONS
+  // CONFIRMATION HELPERS
   // =====================================================
 
   const rememberConfirmation = useCallback(
     (message) => {
       if (!message?.clientMessageId) return;
+
       if (
         normalizeId(message.senderId) !==
         normalizeId(currentUserId)
@@ -238,12 +336,22 @@ export default function ConversationMessagesPanel({
         return;
       }
 
-      const key = normalizeId(message.clientMessageId);
-      const confirmations = confirmedMessagesRef.current;
+      const key = normalizeId(
+        message.clientMessageId
+      );
+
+      const confirmations =
+        confirmedMessagesRef.current;
+
       confirmations.set(key, message);
 
-      if (confirmations.size > MAX_CONFIRMED_CACHE) {
-        const oldestKey = confirmations.keys().next().value;
+      if (
+        confirmations.size >
+        MAX_CONFIRMED_CACHE
+      ) {
+        const oldestKey =
+          confirmations.keys().next().value;
+
         confirmations.delete(oldestKey);
       }
     },
@@ -259,7 +367,7 @@ export default function ConversationMessagesPanel({
   );
 
   // =====================================================
-  // CHECK CONVERSATION PERMISSION
+  // REFRESH CONVERSATION PERMISSION
   // =====================================================
 
   const refreshPermission = useCallback(async () => {
@@ -268,9 +376,11 @@ export default function ConversationMessagesPanel({
     permissionControllerRef.current?.abort();
 
     const controller = new AbortController();
+
     permissionControllerRef.current = controller;
 
-    const generation = ++permissionGenerationRef.current;
+    const generation =
+      ++permissionGenerationRef.current;
 
     setCheckingPermission(true);
     setPermissionError("");
@@ -289,11 +399,15 @@ export default function ConversationMessagesPanel({
         return;
       }
 
-      validateConversationResponse(result, conversationId);
+      validateConversationResponse(
+        result,
+        conversationId
+      );
 
       setPermission({
         canSendMessage: result.canSendMessage,
-        cannotSendReason: result.cannotSendReason || "",
+        cannotSendReason:
+          result.cannotSendReason || "",
       });
     } catch (error) {
       if (
@@ -318,18 +432,21 @@ export default function ConversationMessagesPanel({
         setCheckingPermission(false);
       }
 
-      if (permissionControllerRef.current === controller) {
+      if (
+        permissionControllerRef.current === controller
+      ) {
         permissionControllerRef.current = null;
       }
     }
   }, [conversationId]);
 
   // =====================================================
-  // INITIAL HISTORY
+  // INITIAL MESSAGE HISTORY
   // =====================================================
 
   useEffect(() => {
     mountedRef.current = true;
+
     const controller = new AbortController();
 
     async function loadInitialMessages() {
@@ -342,26 +459,38 @@ export default function ConversationMessagesPanel({
           }
         );
 
-        if (controller.signal.aborted || !mountedRef.current) {
+        if (
+          controller.signal.aborted ||
+          !mountedRef.current
+        ) {
           return;
         }
 
-        validateMessagesResponse(result, conversationId);
+        validateMessagesResponse(
+          result,
+          conversationId
+        );
 
         setHistory((previous) => ({
           ...previous,
+
           messages: mergeMessages(
             previous.messages,
             result.items
           ),
+
           loading: false,
           error: "",
           hasMore: Boolean(result.hasMore),
+
           nextBeforeSequence:
             result.nextBeforeSequence ?? null,
         }));
       } catch (error) {
-        if (isCanceled(error, controller) || !mountedRef.current) {
+        if (
+          isCanceled(error, controller) ||
+          !mountedRef.current
+        ) {
           return;
         }
 
@@ -380,6 +509,7 @@ export default function ConversationMessagesPanel({
 
     return () => {
       mountedRef.current = false;
+
       controller.abort();
 
       olderControllerRef.current?.abort();
@@ -396,7 +526,7 @@ export default function ConversationMessagesPanel({
   }, [conversationId]);
 
   // =====================================================
-  // MESSAGE CREATED REALTIME
+  // REALTIME MESSAGE CREATED
   // =====================================================
 
   useEffect(() => {
@@ -407,6 +537,7 @@ export default function ConversationMessagesPanel({
 
       setHistory((previous) => ({
         ...previous,
+
         messages: mergeMessages(
           previous.messages,
           [message]
@@ -442,7 +573,10 @@ export default function ConversationMessagesPanel({
       }
     }
 
-    return subscribe("MessageCreated", handleMessageCreated);
+    return subscribe(
+      "MessageCreated",
+      handleMessageCreated
+    );
   }, [
     conversationId,
     currentUserId,
@@ -451,7 +585,7 @@ export default function ConversationMessagesPanel({
   ]);
 
   // =====================================================
-  // RECONCILE MESSAGES AFTER RECONNECT
+  // RECONCILE AFTER RECONNECT
   // =====================================================
 
   useEffect(() => {
@@ -461,9 +595,12 @@ export default function ConversationMessagesPanel({
       return undefined;
     }
 
-    const syncKey = `${syncVersion}:${manualSyncKey}`;
+    const syncKey =
+      `${syncVersion}:${manualSyncKey}`;
 
-    if (syncVersionSeenRef.current === syncKey) {
+    if (
+      syncVersionSeenRef.current === syncKey
+    ) {
       return undefined;
     }
 
@@ -473,33 +610,45 @@ export default function ConversationMessagesPanel({
     let active = true;
 
     async function run() {
-      const snapshot = historySnapshotRef.current.messages;
+      const snapshot =
+        historySnapshotRef.current.messages;
 
       const knownSequence = snapshot.reduce(
         (max, message) =>
-          Math.max(max, Number(message.sequenceNumber) || 0),
+          Math.max(
+            max,
+            Number(message.sequenceNumber) || 0
+          ),
         0
       );
 
       const pendingId =
-        pendingMessageRef.current?.clientMessageId ?? null;
+        pendingMessageRef.current
+          ?.clientMessageId ?? null;
 
       setSyncing(true);
       setSyncError("");
 
       try {
-        const result = await reconcileConversationMessages({
-          conversationId,
-          knownSequence,
-          pendingClientMessageId: pendingId,
-          currentUserId,
-          signal: controller.signal,
-        });
+        const result =
+          await reconcileConversationMessages({
+            conversationId,
+            knownSequence,
+            pendingClientMessageId: pendingId,
+            currentUserId,
+            signal: controller.signal,
+          });
 
-        if (!active || controller.signal.aborted) return;
+        if (
+          !active ||
+          controller.signal.aborted
+        ) {
+          return;
+        }
 
         setHistory((previous) => ({
           ...previous,
+
           messages: mergeMessages(
             previous.messages,
             result.messages
@@ -510,15 +659,17 @@ export default function ConversationMessagesPanel({
           rememberConfirmation(message);
         }
 
-        const currentPending = pendingMessageRef.current;
+        const currentPending =
+          pendingMessageRef.current;
 
         const savedPending = currentPending
-          ? result.messages.find((message) =>
-              isSameClientMessage(
-                message,
-                currentPending,
-                currentUserId
-              )
+          ? result.messages.find(
+              (message) =>
+                isSameClientMessage(
+                  message,
+                  currentPending,
+                  currentUserId
+                )
             )
           : null;
 
@@ -527,8 +678,12 @@ export default function ConversationMessagesPanel({
 
           setRetryMessage((previous) =>
             previous &&
-            normalizeId(previous.clientMessageId) ===
-              normalizeId(savedPending.clientMessageId)
+            normalizeId(
+              previous.clientMessageId
+            ) ===
+              normalizeId(
+                savedPending.clientMessageId
+              )
               ? null
               : previous
           );
@@ -545,16 +700,27 @@ export default function ConversationMessagesPanel({
         }
 
         if (import.meta.env.DEV) {
-          console.info("[WebChat] Message reconciliation", {
-            conversationId,
-            recovered: result.messages.length,
-            pagesFetched: result.pagesFetched,
-            complete: result.complete,
-            pendingFound: result.pendingFound,
-          });
+          console.info(
+            "[WebChat] Message reconciliation",
+            {
+              conversationId,
+              recovered:
+                result.messages.length,
+              pagesFetched:
+                result.pagesFetched,
+              complete: result.complete,
+              pendingFound:
+                result.pendingFound,
+            }
+          );
         }
       } catch (error) {
-        if (!active || controller.signal.aborted) return;
+        if (
+          !active ||
+          controller.signal.aborted
+        ) {
+          return;
+        }
 
         setSyncError(
           "Không thể đồng bộ tin nhắn. Hãy thử lại."
@@ -565,7 +731,9 @@ export default function ConversationMessagesPanel({
           error
         );
       } finally {
-        if (active) setSyncing(false);
+        if (active) {
+          setSyncing(false);
+        }
       }
     }
 
@@ -585,7 +753,7 @@ export default function ConversationMessagesPanel({
   ]);
 
   // =====================================================
-  // PERMISSION: FOCUS / VISIBILITY
+  // PERMISSION ON FOCUS / VISIBILITY
   // =====================================================
 
   useEffect(() => {
@@ -601,7 +769,10 @@ export default function ConversationMessagesPanel({
 
     void refreshPermission();
 
-    window.addEventListener("focus", onFocus);
+    window.addEventListener(
+      "focus",
+      onFocus
+    );
 
     document.addEventListener(
       "visibilitychange",
@@ -609,7 +780,10 @@ export default function ConversationMessagesPanel({
     );
 
     return () => {
-      window.removeEventListener("focus", onFocus);
+      window.removeEventListener(
+        "focus",
+        onFocus
+      );
 
       document.removeEventListener(
         "visibilitychange",
@@ -619,15 +793,15 @@ export default function ConversationMessagesPanel({
   }, [refreshPermission]);
 
   // =====================================================
-  // 5.7.8D3 - REALTIME PERMISSION
+  // REALTIME PERMISSION
   // =====================================================
 
   useEffect(() => {
     function schedulePermissionRefresh() {
       if (!mountedRef.current) return;
 
-      // Ngừng dùng quyền cũ ngay khi nhận event.
       permissionControllerRef.current?.abort();
+
       permissionGenerationRef.current += 1;
 
       setPermission((previous) => ({
@@ -640,14 +814,20 @@ export default function ConversationMessagesPanel({
       setCheckingPermission(true);
       setPermissionError("");
 
-      if (permissionRefreshTimerRef.current !== null) {
-        clearTimeout(permissionRefreshTimerRef.current);
+      if (
+        permissionRefreshTimerRef.current !== null
+      ) {
+        clearTimeout(
+          permissionRefreshTimerRef.current
+        );
       }
 
-      permissionRefreshTimerRef.current = setTimeout(() => {
-        permissionRefreshTimerRef.current = null;
-        void refreshPermission();
-      }, PERMISSION_REFRESH_DELAY);
+      permissionRefreshTimerRef.current =
+        setTimeout(() => {
+          permissionRefreshTimerRef.current = null;
+
+          void refreshPermission();
+        }, PERMISSION_REFRESH_DELAY);
     }
 
     function onConversationPermissionChanged(payload) {
@@ -662,10 +842,17 @@ export default function ConversationMessagesPanel({
     }
 
     function onFriendshipChanged(payload) {
-      const actor = normalizeId(payload?.actorUserId);
-      const target = normalizeId(payload?.targetUserId);
-      const current = normalizeId(currentUserId);
-      const other = normalizeId(conversation.otherUserId);
+      const actor =
+        normalizeId(payload?.actorUserId);
+
+      const target =
+        normalizeId(payload?.targetUserId);
+
+      const current =
+        normalizeId(currentUserId);
+
+      const other =
+        normalizeId(conversation.otherUserId);
 
       if (!current || !other) return;
 
@@ -692,8 +879,13 @@ export default function ConversationMessagesPanel({
       offPermission();
       offFriendship();
 
-      if (permissionRefreshTimerRef.current !== null) {
-        clearTimeout(permissionRefreshTimerRef.current);
+      if (
+        permissionRefreshTimerRef.current !== null
+      ) {
+        clearTimeout(
+          permissionRefreshTimerRef.current
+        );
+
         permissionRefreshTimerRef.current = null;
       }
     };
@@ -710,9 +902,19 @@ export default function ConversationMessagesPanel({
   // =====================================================
 
   useEffect(() => {
-    if (!isConnected || syncVersion === 0) return;
+    if (
+      !isConnected ||
+      syncVersion === 0
+    ) {
+      return;
+    }
+
     void refreshPermission();
-  }, [isConnected, syncVersion, refreshPermission]);
+  }, [
+    isConnected,
+    syncVersion,
+    refreshPermission,
+  ]);
 
   // =====================================================
   // LOAD OLDER MESSAGES
@@ -731,6 +933,7 @@ export default function ConversationMessagesPanel({
     olderBusyRef.current = true;
 
     const controller = new AbortController();
+
     olderControllerRef.current = controller;
 
     setLoadingOlder(true);
@@ -740,52 +943,78 @@ export default function ConversationMessagesPanel({
       const result = await getConversationMessages(
         conversationId,
         {
-          beforeSequence: history.nextBeforeSequence,
+          beforeSequence:
+            history.nextBeforeSequence,
           pageSize: PAGE_SIZE,
           signal: controller.signal,
         }
       );
 
-      if (controller.signal.aborted || !mountedRef.current) {
+      if (
+        controller.signal.aborted ||
+        !mountedRef.current
+      ) {
         return false;
       }
 
-      validateMessagesResponse(result, conversationId);
+      validateMessagesResponse(
+        result,
+        conversationId
+      );
 
-      const oldCursor = history.nextBeforeSequence;
-      const newCursor = result.nextBeforeSequence ?? null;
+      const oldCursor =
+        history.nextBeforeSequence;
+
+      const newCursor =
+        result.nextBeforeSequence ?? null;
 
       if (
         result.hasMore &&
-        (newCursor === null || newCursor >= oldCursor)
+        (
+          newCursor === null ||
+          newCursor >= oldCursor
+        )
       ) {
-        throw new Error("Cursor tin nhắn không hợp lệ.");
+        throw new Error(
+          "Cursor tin nhắn không hợp lệ."
+        );
       }
 
       const existingIds = new Set(
-        history.messages.map((message) =>
-          normalizeId(message.id)
+        history.messages.map(
+          (message) =>
+            normalizeId(message.id)
         )
       );
 
-      const hasNewOlderMessages = result.items.some(
-        (message) => !existingIds.has(normalizeId(message.id))
-      );
+      const hasNewOlderMessages =
+        result.items.some(
+          (message) =>
+            !existingIds.has(
+              normalizeId(message.id)
+            )
+        );
 
       setHistory((previous) => ({
         ...previous,
+
         messages: mergeMessages(
           previous.messages,
           result.items
         ),
+
         hasMore: Boolean(result.hasMore),
+
         nextBeforeSequence:
           result.hasMore ? newCursor : null,
       }));
 
       return hasNewOlderMessages;
     } catch (error) {
-      if (isCanceled(error, controller) || !mountedRef.current) {
+      if (
+        isCanceled(error, controller) ||
+        !mountedRef.current
+      ) {
         return false;
       }
 
@@ -800,7 +1029,9 @@ export default function ConversationMessagesPanel({
     } finally {
       olderBusyRef.current = false;
 
-      if (olderControllerRef.current === controller) {
+      if (
+        olderControllerRef.current === controller
+      ) {
         olderControllerRef.current = null;
       }
 
@@ -827,6 +1058,7 @@ export default function ConversationMessagesPanel({
     setRefreshing(true);
 
     const controller = new AbortController();
+
     refreshControllerRef.current = controller;
 
     try {
@@ -838,24 +1070,34 @@ export default function ConversationMessagesPanel({
         }
       );
 
-      if (controller.signal.aborted || !mountedRef.current) {
+      if (
+        controller.signal.aborted ||
+        !mountedRef.current
+      ) {
         return;
       }
 
-      validateMessagesResponse(result, conversationId);
+      validateMessagesResponse(
+        result,
+        conversationId
+      );
 
       setHistory((previous) => ({
         ...previous,
+
         messages: mergeMessages(
           previous.messages,
           result.items
         ),
+
         loading: false,
         error: "",
+
         hasMore:
           previous.messages.length > 0
             ? previous.hasMore
             : Boolean(result.hasMore),
+
         nextBeforeSequence:
           previous.messages.length > 0
             ? previous.nextBeforeSequence
@@ -864,13 +1106,17 @@ export default function ConversationMessagesPanel({
 
       setOlderError("");
     } catch (error) {
-      if (isCanceled(error, controller) || !mountedRef.current) {
+      if (
+        isCanceled(error, controller) ||
+        !mountedRef.current
+      ) {
         return;
       }
 
       setHistory((previous) => ({
         ...previous,
         loading: false,
+
         error: getErrorMessage(
           error,
           "Không thể làm mới lịch sử tin nhắn."
@@ -879,11 +1125,15 @@ export default function ConversationMessagesPanel({
     } finally {
       refreshingRef.current = false;
 
-      if (refreshControllerRef.current === controller) {
+      if (
+        refreshControllerRef.current === controller
+      ) {
         refreshControllerRef.current = null;
       }
 
-      if (mountedRef.current) setRefreshing(false);
+      if (mountedRef.current) {
+        setRefreshing(false);
+      }
     }
   }
 
@@ -895,6 +1145,7 @@ export default function ConversationMessagesPanel({
     if (sendingRef.current) return;
 
     sendingRef.current = true;
+
     pendingMessageRef.current = messageToSend;
 
     setSending(true);
@@ -903,14 +1154,23 @@ export default function ConversationMessagesPanel({
     try {
       const savedMessage = await sendMessage({
         conversationId,
-        clientMessageId: messageToSend.clientMessageId,
-        content: messageToSend.content,
+
+        clientMessageId:
+          messageToSend.clientMessageId,
+
+        content:
+          messageToSend.content,
       });
 
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) {
+        return;
+      }
 
       if (
-        !isValidMessage(savedMessage, conversationId) ||
+        !isValidMessage(
+          savedMessage,
+          conversationId
+        ) ||
         !isSameClientMessage(
           savedMessage,
           messageToSend,
@@ -926,6 +1186,7 @@ export default function ConversationMessagesPanel({
 
       setHistory((previous) => ({
         ...previous,
+
         messages: mergeMessages(
           previous.messages,
           [savedMessage]
@@ -945,7 +1206,9 @@ export default function ConversationMessagesPanel({
       setRetryMessage(null);
       setSendError("");
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) {
+        return;
+      }
 
       const confirmedMessage = getConfirmation(
         messageToSend.clientMessageId
@@ -954,6 +1217,7 @@ export default function ConversationMessagesPanel({
       if (confirmedMessage) {
         setHistory((previous) => ({
           ...previous,
+
           messages: mergeMessages(
             previous.messages,
             [confirmedMessage]
@@ -964,13 +1228,16 @@ export default function ConversationMessagesPanel({
           normalizeId(
             pendingMessageRef.current?.clientMessageId
           ) ===
-          normalizeId(messageToSend.clientMessageId)
+          normalizeId(
+            messageToSend.clientMessageId
+          )
         ) {
           pendingMessageRef.current = null;
         }
 
         setRetryMessage(null);
         setSendError("");
+
         return;
       }
 
@@ -1000,6 +1267,10 @@ export default function ConversationMessagesPanel({
       }
     }
   }
+
+  // =====================================================
+  // SEND HANDLERS
+  // =====================================================
 
   function handleSend(content) {
     if (
@@ -1032,6 +1303,7 @@ export default function ConversationMessagesPanel({
     }
 
     const normalizedContent = content.trim();
+
     if (!normalizedContent) return;
 
     const request = {
@@ -1043,7 +1315,10 @@ export default function ConversationMessagesPanel({
   }
 
   function handleRetry() {
-    if (!retryMessage || sendingRef.current) {
+    if (
+      !retryMessage ||
+      sendingRef.current
+    ) {
       return;
     }
 
@@ -1078,6 +1353,7 @@ export default function ConversationMessagesPanel({
 
       setHistory((previous) => ({
         ...previous,
+
         messages: mergeMessages(
           previous.messages,
           [alreadyConfirmed]
@@ -1094,6 +1370,7 @@ export default function ConversationMessagesPanel({
     if (sendingRef.current) return;
 
     pendingMessageRef.current = null;
+
     setRetryMessage(null);
     setSendError("");
   }
@@ -1102,8 +1379,12 @@ export default function ConversationMessagesPanel({
   // VIEW MODELS
   // =====================================================
 
-  const messages = history.messages.map((message) =>
-    toMessageViewModel(message, currentUserId)
+  const messages = history.messages.map(
+    (message) =>
+      toMessageViewModel(
+        message,
+        currentUserId
+      )
   );
 
   const canSendMessage =
@@ -1120,13 +1401,43 @@ export default function ConversationMessagesPanel({
         "Hiện tại bạn không thể gửi tin nhắn.");
 
   // =====================================================
+  // 5.8E3 - READ CURSOR
+  // =====================================================
+
+  const myLastReadSequence =
+    conversationStatus?.myLastReadSequence;
+
+  // Chỉ render Read Sync sau khi:
+  // - Lịch sử tải thành công
+  // - Không đang đồng bộ thiếu dữ liệu
+  // - Đã có Conversation Status
+  //
+  // MessageReadSync tự kiểm tra thêm:
+  // tab visible, focus, cuộn cuối và sequence.
+
+  const canMountReadSync =
+    !history.loading &&
+    !history.error &&
+    !syncing &&
+    !syncError &&
+    Boolean(conversationStatus) &&
+    Number.isSafeInteger(
+      conversation.lastMessageSequence
+    ) &&
+    Number.isSafeInteger(myLastReadSequence);
+
+  // =====================================================
   // RENDER
   // =====================================================
 
   return (
     <>
+      {/* HISTORY ERROR */}
       {history.error && (
-        <div className="webchat-history-error" role="alert">
+        <div
+          className="webchat-history-error"
+          role="alert"
+        >
           <div className="webchat-history-error-text">
             <AlertCircle size={19} />
 
@@ -1150,34 +1461,50 @@ export default function ConversationMessagesPanel({
               <RefreshCw size={16} />
             )}
 
-            {refreshing ? "Đang thử lại..." : "Thử lại"}
+            {refreshing
+              ? "Đang thử lại..."
+              : "Thử lại"}
           </button>
         </div>
       )}
 
+      {/* LOAD OLDER ERROR */}
       {olderError && (
-        <div className="webchat-older-error" role="alert">
+        <div
+          className="webchat-older-error"
+          role="alert"
+        >
           <AlertCircle size={16} />
           <span>{olderError}</span>
 
           <button
             type="button"
             disabled={loadingOlder}
-            onClick={() => void handleLoadOlder()}
+            onClick={() =>
+              void handleLoadOlder()
+            }
           >
-            {loadingOlder ? "Đang tải..." : "Thử lại"}
+            {loadingOlder
+              ? "Đang tải..."
+              : "Thử lại"}
           </button>
         </div>
       )}
 
+      {/* PERMISSION ERROR */}
       {permissionError && (
-        <div className="webchat-permission-error" role="alert">
+        <div
+          className="webchat-permission-error"
+          role="alert"
+        >
           <AlertCircle size={16} />
           <span>{permissionError}</span>
 
           <button
             type="button"
-            onClick={() => void refreshPermission()}
+            onClick={() =>
+              void refreshPermission()
+            }
             disabled={checkingPermission}
           >
             Kiểm tra lại
@@ -1185,8 +1512,12 @@ export default function ConversationMessagesPanel({
         </div>
       )}
 
+      {/* REALTIME CONNECTION STATUS */}
       {!isConnected && (
-        <div className="webchat-permission-error" role="status">
+        <div
+          className="webchat-permission-error"
+          role="status"
+        >
           <AlertCircle size={16} />
 
           <span>
@@ -1209,6 +1540,7 @@ export default function ConversationMessagesPanel({
         </div>
       )}
 
+      {/* RECONCILIATION */}
       {syncing && (
         <div
           className="webchat-sending-status"
@@ -1218,7 +1550,9 @@ export default function ConversationMessagesPanel({
             size={15}
             className="webchat-spin"
           />
-          <span>Đang đồng bộ tin nhắn bị bỏ lỡ...</span>
+          <span>
+            Đang đồng bộ tin nhắn bị bỏ lỡ...
+          </span>
         </div>
       )}
 
@@ -1235,7 +1569,9 @@ export default function ConversationMessagesPanel({
           <button
             type="button"
             onClick={() =>
-              setManualSyncKey((key) => key + 1)
+              setManualSyncKey(
+                (key) => key + 1
+              )
             }
           >
             <RefreshCw size={16} />
@@ -1243,6 +1579,10 @@ export default function ConversationMessagesPanel({
           </button>
         </div>
       )}
+
+      {/* =================================================
+          5.8E3 - MESSAGE LIST + SENT/DELIVERED/SEEN
+          ================================================= */}
 
       {history.loading ? (
         <div
@@ -1254,19 +1594,46 @@ export default function ConversationMessagesPanel({
             className="webchat-spin"
           />
 
-          <strong>Đang tải tin nhắn</strong>
-          <p>Đang lấy lịch sử cuộc trò chuyện...</p>
+          <strong>
+            Đang tải tin nhắn
+          </strong>
+
+          <p>
+            Đang lấy lịch sử cuộc trò chuyện...
+          </p>
         </div>
       ) : (
-        <MessageList
-          conversation={conversation}
-          messages={messages}
-          hasMore={history.hasMore}
-          loadingOlder={loadingOlder}
-          onLoadOlder={handleLoadOlder}
-        />
+        <>
+          {/* MESSAGE LIST */}
+          <MessageList
+            conversation={conversation}
+            messages={messages}
+            conversationStatus={conversationStatus}
+            hasMore={history.hasMore}
+            loadingOlder={loadingOlder}
+            onLoadOlder={handleLoadOlder}
+          />
+
+          {/* MESSAGE READ SYNC */}
+          {canMountReadSync && (
+            <MessageReadSync
+              conversationId={conversationId}
+              currentUserId={currentUserId}
+              lastMessageSequence={
+                conversation.lastMessageSequence
+              }
+              myLastReadSequence={
+                myLastReadSequence
+              }
+              messages={messages}
+              loading={history.loading}
+              onReadConfirmed={refreshConversation}
+            />
+          )}
+        </>
       )}
 
+      {/* SEND ERROR / RETRY */}
       {sendError && (
         <div
           className="webchat-send-error"
@@ -1303,7 +1670,10 @@ export default function ConversationMessagesPanel({
                   type="button"
                   className="webchat-retry-button"
                   onClick={handleRetry}
-                  disabled={sending || !canSendMessage}
+                  disabled={
+                    sending ||
+                    !canSendMessage
+                  }
                 >
                   <RotateCcw size={15} />
                   Thử gửi lại
@@ -1337,6 +1707,7 @@ export default function ConversationMessagesPanel({
         </div>
       )}
 
+      {/* SENDING */}
       {sending && (
         <div
           className="webchat-sending-status"
@@ -1346,10 +1717,14 @@ export default function ConversationMessagesPanel({
             size={15}
             className="webchat-spin"
           />
-          <span>Đang gửi tin nhắn...</span>
+
+          <span>
+            Đang gửi tin nhắn...
+          </span>
         </div>
       )}
 
+      {/* MESSAGE INPUT / READONLY */}
       {permission.canSendMessage ? (
         <MessageInput
           conversationId={conversationId}
@@ -1372,13 +1747,20 @@ export default function ConversationMessagesPanel({
           <ShieldAlert size={20} />
 
           <div className="webchat-readonly-content">
-            <strong>Hội thoại chỉ đọc</strong>
-            <span>{cannotSendReason}</span>
+            <strong>
+              Hội thoại chỉ đọc
+            </strong>
+
+            <span>
+              {cannotSendReason}
+            </span>
           </div>
 
           <button
             type="button"
-            onClick={() => void refreshPermission()}
+            onClick={() =>
+              void refreshPermission()
+            }
             disabled={checkingPermission}
           >
             {checkingPermission ? (
@@ -1389,6 +1771,7 @@ export default function ConversationMessagesPanel({
             ) : (
               <RefreshCw size={16} />
             )}
+
             Kiểm tra lại
           </button>
         </div>

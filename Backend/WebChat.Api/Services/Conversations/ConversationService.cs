@@ -2,6 +2,7 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+
 using WebChat.Api.Data;
 using WebChat.Api.DTOs.Conversations;
 using WebChat.Api.Models;
@@ -38,9 +39,9 @@ public sealed class ConversationService(
                 "Không thể tạo hội thoại với chính mình.");
         }
 
-        // SQL Server sử dụng quy tắc so sánh
-        // uniqueidentifier riêng. Không sắp xếp
-        // theo chuỗi GUID trong C#.
+        // SQL Server có quy tắc so sánh uniqueidentifier
+        // riêng. Không sắp xếp GUID bằng chuỗi C#.
+
         var firstComesBefore = await db.Database
             .SqlQueryRaw<int>(
                 """
@@ -49,8 +50,12 @@ public sealed class ConversationService(
                     ELSE 0
                 END AS [Value]
                 """,
-                new SqlParameter("@userA", currentUserId),
-                new SqlParameter("@userB", targetUserId))
+                new SqlParameter(
+                    "@userA",
+                    currentUserId),
+                new SqlParameter(
+                    "@userB",
+                    targetUserId))
             .SingleAsync(cancellationToken);
 
         var lowId = firstComesBefore == 1
@@ -61,20 +66,24 @@ public sealed class ConversationService(
             ? targetUserId
             : currentUserId;
 
+        // =================================================
+        // TRANSACTION + APPLICATION LOCK
+        // =================================================
+
         await using var transaction =
             await db.Database.BeginTransactionAsync(
                 IsolationLevel.Serializable,
                 cancellationToken);
 
-        // Khóa chống hai request cùng tạo một
-        // Private Conversation cho một cặp Users.
         var lockIds = new[]
         {
             currentUserId.ToString("N"),
             targetUserId.ToString("N")
         };
 
-        Array.Sort(lockIds, StringComparer.Ordinal);
+        Array.Sort(
+            lockIds,
+            StringComparer.Ordinal);
 
         var lockResource =
             $"WebChat:PrivateConversation:" +
@@ -97,12 +106,17 @@ public sealed class ConversationService(
             """,
             cancellationToken);
 
+        // =================================================
+        // VALIDATE ACTIVE USERS
+        // =================================================
+
         var activeUsers = await db.Users
             .AsNoTracking()
             .CountAsync(
-                x => (x.Id == currentUserId ||
-                      x.Id == targetUserId) &&
-                     x.IsActive,
+                x =>
+                    (x.Id == currentUserId ||
+                     x.Id == targetUserId) &&
+                    x.IsActive,
                 cancellationToken);
 
         if (activeUsers != 2)
@@ -111,13 +125,22 @@ public sealed class ConversationService(
                 "Một trong hai tài khoản không khả dụng.");
         }
 
+        // =================================================
+        // FIND EXISTING CONVERSATION
+        // =================================================
+
         var conversation = await db.Conversations
             .AsNoTracking()
             .FirstOrDefaultAsync(
-                x => x.Type == PrivateConversationType &&
-                     x.PrivateUserLowId == lowId &&
-                     x.PrivateUserHighId == highId,
+                x =>
+                    x.Type == PrivateConversationType &&
+                    x.PrivateUserLowId == lowId &&
+                    x.PrivateUserHighId == highId,
                 cancellationToken);
+
+        // =================================================
+        // CHECK FRIENDSHIP / BLOCK
+        // =================================================
 
         var areFriends = await db.Friendships
             .AsNoTracking()
@@ -139,7 +162,12 @@ public sealed class ConversationService(
                      x.BlockedId == currentUserId),
                 cancellationToken);
 
-        var canSend = areFriends && !isBlocked;
+        var canSend =
+            areFriends && !isBlocked;
+
+        // =================================================
+        // CREATE IF NOT EXISTS
+        // =================================================
 
         if (conversation == null)
         {
@@ -154,10 +182,13 @@ public sealed class ConversationService(
             {
                 Id = Guid.NewGuid(),
                 Type = PrivateConversationType,
+
                 PrivateUserLowId = lowId,
                 PrivateUserHighId = highId,
+
                 CreatedByUserId = currentUserId,
                 CreatedAtUtc = DateTime.UtcNow,
+
                 LastMessageSequence = 0
             };
 
@@ -169,7 +200,8 @@ public sealed class ConversationService(
                     Id = Guid.NewGuid(),
                     ConversationId = conversation.Id,
                     UserId = currentUserId,
-                    JoinedAtUtc = conversation.CreatedAtUtc,
+                    JoinedAtUtc =
+                        conversation.CreatedAtUtc,
                     LastReadSequence = 0
                 },
                 new ConversationMember
@@ -177,35 +209,48 @@ public sealed class ConversationService(
                     Id = Guid.NewGuid(),
                     ConversationId = conversation.Id,
                     UserId = targetUserId,
-                    JoinedAtUtc = conversation.CreatedAtUtc,
+                    JoinedAtUtc =
+                        conversation.CreatedAtUtc,
                     LastReadSequence = 0
                 });
 
-            await db.SaveChangesAsync(cancellationToken);
+            await db.SaveChangesAsync(
+                cancellationToken);
         }
         else
         {
-            var memberCount = await db.ConversationMembers
-                .AsNoTracking()
-                .CountAsync(
-                    x => x.ConversationId == conversation.Id &&
-                         (x.UserId == currentUserId ||
-                          x.UserId == targetUserId),
-                    cancellationToken);
+            var memberCount =
+                await db.ConversationMembers
+                    .AsNoTracking()
+                    .CountAsync(
+                        x =>
+                            x.ConversationId ==
+                                conversation.Id &&
+                            (x.UserId == currentUserId ||
+                             x.UserId == targetUserId),
+                        cancellationToken);
 
             if (memberCount != 2)
             {
                 throw new InvalidOperationException(
-                    "Dữ liệu thành viên hội thoại không hợp lệ.");
+                    "Dữ liệu thành viên hội thoại " +
+                    "không hợp lệ.");
             }
         }
 
-        var myMembership = await db.ConversationMembers
-            .AsNoTracking()
-            .SingleAsync(
-                x => x.ConversationId == conversation.Id &&
-                     x.UserId == currentUserId,
-                cancellationToken);
+        // =================================================
+        // LOAD CURRENT MEMBERSHIP / OTHER USER
+        // =================================================
+
+        var myMembership =
+            await db.ConversationMembers
+                .AsNoTracking()
+                .SingleAsync(
+                    x =>
+                        x.ConversationId ==
+                            conversation.Id &&
+                        x.UserId == currentUserId,
+                    cancellationToken);
 
         var otherUser = await db.Users
             .AsNoTracking()
@@ -213,13 +258,35 @@ public sealed class ConversationService(
                 x => x.Id == targetUserId,
                 cancellationToken);
 
-        await transaction.CommitAsync(cancellationToken);
-
-        // PHASE 5.8B: Unread snapshot sau commit.
-        var unreadCounts = await GetUnreadCountsAsync(
-            currentUserId,
-            [conversation.Id],
+        await transaction.CommitAsync(
             cancellationToken);
+
+        // =================================================
+        // UNREAD COUNT
+        // =================================================
+
+        var unreadCounts =
+            await GetUnreadCountsAsync(
+                currentUserId,
+                [conversation.Id],
+                cancellationToken);
+
+        // =================================================
+        // NEW - LAST MESSAGE PREVIEW
+        // =================================================
+
+        var previews =
+            await GetLastMessagePreviewsAsync(
+                [conversation.Id],
+                cancellationToken);
+
+        previews.TryGetValue(
+            conversation.Id,
+            out var preview);
+
+        // =================================================
+        // RETURN DTO
+        // =================================================
 
         return MapConversation(
             conversation,
@@ -232,7 +299,8 @@ public sealed class ConversationService(
                 isBlocked,
                 otherUser.IsActive),
             unreadCounts.GetValueOrDefault(
-                conversation.Id));
+                conversation.Id),
+            preview);
     }
 
     // =====================================================
@@ -250,11 +318,16 @@ public sealed class ConversationService(
             return null;
         }
 
-        // Không cho tài khoản inactive sử dụng Service.
+        // =================================================
+        // VALIDATE ACTIVE USER
+        // =================================================
+
         var currentUserActive = await db.Users
             .AsNoTracking()
             .AnyAsync(
-                x => x.Id == currentUserId && x.IsActive,
+                x =>
+                    x.Id == currentUserId &&
+                    x.IsActive,
                 cancellationToken);
 
         if (!currentUserActive)
@@ -262,37 +335,50 @@ public sealed class ConversationService(
             return null;
         }
 
-        // Kiểm tra membership ngay trong truy vấn.
-        // Không cho người ngoài xem Conversation.
-        var membership = await db.ConversationMembers
-            .AsNoTracking()
-            .Include(x => x.Conversation)
-            .FirstOrDefaultAsync(
-                x => x.ConversationId == conversationId &&
-                     x.UserId == currentUserId &&
-                     x.Conversation.Type ==
-                         PrivateConversationType,
-                cancellationToken);
+        // =================================================
+        // VALIDATE MEMBERSHIP
+        // =================================================
+
+        var membership =
+            await db.ConversationMembers
+                .AsNoTracking()
+                .Include(x => x.Conversation)
+                .FirstOrDefaultAsync(
+                    x =>
+                        x.ConversationId ==
+                            conversationId &&
+                        x.UserId == currentUserId &&
+                        x.Conversation.Type ==
+                            PrivateConversationType,
+                    cancellationToken);
 
         if (membership == null)
         {
             return null;
         }
 
-        var conversation = membership.Conversation;
+        var conversation =
+            membership.Conversation;
 
         Guid otherUserId;
 
-        if (conversation.PrivateUserLowId == currentUserId)
+        if (
+            conversation.PrivateUserLowId ==
+                currentUserId
+        )
         {
             otherUserId =
-                conversation.PrivateUserHighId ?? Guid.Empty;
+                conversation.PrivateUserHighId ??
+                Guid.Empty;
         }
         else if (
-            conversation.PrivateUserHighId == currentUserId)
+            conversation.PrivateUserHighId ==
+                currentUserId
+        )
         {
             otherUserId =
-                conversation.PrivateUserLowId ?? Guid.Empty;
+                conversation.PrivateUserLowId ??
+                Guid.Empty;
         }
         else
         {
@@ -304,13 +390,19 @@ public sealed class ConversationService(
             return null;
         }
 
-        // Phải tồn tại membership của người còn lại.
-        var otherIsMember = await db.ConversationMembers
-            .AsNoTracking()
-            .AnyAsync(
-                x => x.ConversationId == conversationId &&
-                     x.UserId == otherUserId,
-                cancellationToken);
+        // =================================================
+        // VALIDATE OTHER MEMBERSHIP
+        // =================================================
+
+        var otherIsMember =
+            await db.ConversationMembers
+                .AsNoTracking()
+                .AnyAsync(
+                    x =>
+                        x.ConversationId ==
+                            conversationId &&
+                        x.UserId == otherUserId,
+                    cancellationToken);
 
         if (!otherIsMember)
         {
@@ -328,24 +420,50 @@ public sealed class ConversationService(
             return null;
         }
 
-        // Tính lại quyền gửi từ dữ liệu hiện tại.
-        var permissions = await GetRelationshipPermissionsAsync(
-            currentUserId,
-            [otherUserId],
-            cancellationToken);
+        // =================================================
+        // RELATIONSHIP PERMISSIONS
+        // =================================================
 
-        var permission = permissions[otherUserId];
+        var permissions =
+            await GetRelationshipPermissionsAsync(
+                currentUserId,
+                [otherUserId],
+                cancellationToken);
+
+        var permission =
+            permissions[otherUserId];
 
         var canSend =
             otherUser.IsActive &&
             permission.AreFriends &&
             !permission.IsBlocked;
 
-        // PHASE 5.8B
-        var unreadCounts = await GetUnreadCountsAsync(
-            currentUserId,
-            [conversationId],
-            cancellationToken);
+        // =================================================
+        // UNREAD COUNT
+        // =================================================
+
+        var unreadCounts =
+            await GetUnreadCountsAsync(
+                currentUserId,
+                [conversationId],
+                cancellationToken);
+
+        // =================================================
+        // NEW - LAST MESSAGE PREVIEW
+        // =================================================
+
+        var previews =
+            await GetLastMessagePreviewsAsync(
+                [conversationId],
+                cancellationToken);
+
+        previews.TryGetValue(
+            conversationId,
+            out var preview);
+
+        // =================================================
+        // RETURN DTO
+        // =================================================
 
         return MapConversation(
             conversation,
@@ -358,7 +476,8 @@ public sealed class ConversationService(
                 permission.IsBlocked,
                 otherUser.IsActive),
             unreadCounts.GetValueOrDefault(
-                conversationId));
+                conversationId),
+            preview);
     }
 
     // =====================================================
@@ -373,23 +492,34 @@ public sealed class ConversationService(
             CancellationToken cancellationToken = default)
     {
         page = Math.Max(page, 1);
-        pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
 
-        var response = new ConversationListResponse
-        {
-            Page = page,
-            PageSize = pageSize
-        };
+        pageSize = Math.Clamp(
+            pageSize,
+            1,
+            MaxPageSize);
+
+        var response =
+            new ConversationListResponse
+            {
+                Page = page,
+                PageSize = pageSize
+            };
 
         if (currentUserId == Guid.Empty)
         {
             return response;
         }
 
+        // =================================================
+        // VALIDATE ACTIVE USER
+        // =================================================
+
         var currentUserActive = await db.Users
             .AsNoTracking()
             .AnyAsync(
-                x => x.Id == currentUserId && x.IsActive,
+                x =>
+                    x.Id == currentUserId &&
+                    x.IsActive,
                 cancellationToken);
 
         if (!currentUserActive)
@@ -397,20 +527,23 @@ public sealed class ConversationService(
             return response;
         }
 
-        // Chỉ lấy những hội thoại mình là thành viên
-        // và có cặp Private Users hợp lệ.
-        var query = db.ConversationMembers
-            .AsNoTracking()
-            .Where(x =>
-                x.UserId == currentUserId &&
-                x.Conversation.Type ==
-                    PrivateConversationType &&
-                (
-                    x.Conversation.PrivateUserLowId ==
-                        currentUserId ||
-                    x.Conversation.PrivateUserHighId ==
-                        currentUserId
-                ));
+        // =================================================
+        // QUERY MY PRIVATE CONVERSATIONS
+        // =================================================
+
+        var query =
+            db.ConversationMembers
+                .AsNoTracking()
+                .Where(x =>
+                    x.UserId == currentUserId &&
+                    x.Conversation.Type ==
+                        PrivateConversationType &&
+                    (
+                        x.Conversation.PrivateUserLowId ==
+                            currentUserId ||
+                        x.Conversation.PrivateUserHighId ==
+                            currentUserId
+                    ));
 
         response.Total = await query.CountAsync(
             cancellationToken);
@@ -424,11 +557,17 @@ public sealed class ConversationService(
             return response;
         }
 
+        // =================================================
+        // PAGINATION
+        // =================================================
+
         var memberships = await query
             .OrderByDescending(
-                x => x.Conversation.LastMessageAtUtc ??
-                     x.Conversation.CreatedAtUtc)
-            .ThenByDescending(x => x.Conversation.Id)
+                x =>
+                    x.Conversation.LastMessageAtUtc ??
+                    x.Conversation.CreatedAtUtc)
+            .ThenByDescending(
+                x => x.Conversation.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Include(x => x.Conversation)
@@ -439,7 +578,10 @@ public sealed class ConversationService(
             return response;
         }
 
-        // Xác định người còn lại trong từng hội thoại.
+        // =================================================
+        // OTHER USER IDS
+        // =================================================
+
         var otherUserIds = memberships
             .Select(x =>
                 x.Conversation.PrivateUserLowId ==
@@ -451,13 +593,21 @@ public sealed class ConversationService(
             .Distinct()
             .ToList();
 
-        // Batch query, tránh N+1 queries.
+        // =================================================
+        // BATCH LOAD OTHER USERS
+        // =================================================
+
         var otherUsers = await db.Users
             .AsNoTracking()
-            .Where(x => otherUserIds.Contains(x.Id))
+            .Where(
+                x => otherUserIds.Contains(x.Id))
             .ToDictionaryAsync(
                 x => x.Id,
                 cancellationToken);
+
+        // =================================================
+        // BATCH RELATIONSHIP PERMISSIONS
+        // =================================================
 
         var permissions =
             await GetRelationshipPermissionsAsync(
@@ -466,24 +616,47 @@ public sealed class ConversationService(
                 cancellationToken);
 
         // =================================================
-        // PHASE 5.8B - BATCH UNREAD COUNT
+        // CONVERSATION IDS
         // =================================================
 
-        // Chỉ đếm cho những hội thoại thuộc trang này.
-        // Không truy vấn unread riêng trong vòng foreach.
         var conversationIds = memberships
             .Select(x => x.ConversationId)
             .Distinct()
             .ToArray();
 
-        var unreadCounts = await GetUnreadCountsAsync(
-            currentUserId,
-            conversationIds,
-            cancellationToken);
+        // =================================================
+        // BATCH UNREAD COUNT
+        // =================================================
+
+        var unreadCounts =
+            await GetUnreadCountsAsync(
+                currentUserId,
+                conversationIds,
+                cancellationToken);
+
+        // =================================================
+        // NEW - BATCH LAST MESSAGE PREVIEW
+        // =================================================
+
+        // Chỉ thực hiện một query cho những
+        // conversation thuộc trang hiện tại.
+        //
+        // Không truy vấn từng conversation
+        // trong vòng foreach.
+
+        var previews =
+            await GetLastMessagePreviewsAsync(
+                conversationIds,
+                cancellationToken);
+
+        // =================================================
+        // MAP CONVERSATION ITEMS
+        // =================================================
 
         foreach (var membership in memberships)
         {
-            var conversation = membership.Conversation;
+            var conversation =
+                membership.Conversation;
 
             var otherId =
                 conversation.PrivateUserLowId ==
@@ -491,17 +664,21 @@ public sealed class ConversationService(
                     ? conversation.PrivateUserHighId
                     : conversation.PrivateUserLowId;
 
-            if (!otherId.HasValue ||
+            if (
+                !otherId.HasValue ||
                 !otherUsers.TryGetValue(
                     otherId.Value,
-                    out var otherUser))
+                    out var otherUser)
+            )
             {
                 continue;
             }
 
-            if (!permissions.TryGetValue(
+            if (
+                !permissions.TryGetValue(
                     otherId.Value,
-                    out var permission))
+                    out var permission)
+            )
             {
                 continue;
             }
@@ -510,6 +687,10 @@ public sealed class ConversationService(
                 otherUser.IsActive &&
                 permission.AreFriends &&
                 !permission.IsBlocked;
+
+            previews.TryGetValue(
+                conversation.Id,
+                out var preview);
 
             response.Items.Add(
                 MapConversation(
@@ -523,7 +704,8 @@ public sealed class ConversationService(
                         permission.IsBlocked,
                         otherUser.IsActive),
                     unreadCounts.GetValueOrDefault(
-                        conversation.Id)));
+                        conversation.Id),
+                    preview));
         }
 
         return response;
@@ -539,8 +721,10 @@ public sealed class ConversationService(
             IReadOnlyCollection<Guid> conversationIds,
             CancellationToken cancellationToken)
     {
-        if (currentUserId == Guid.Empty ||
-            conversationIds.Count == 0)
+        if (
+            currentUserId == Guid.Empty ||
+            conversationIds.Count == 0
+        )
         {
             return new Dictionary<Guid, int>();
         }
@@ -549,38 +733,37 @@ public sealed class ConversationService(
             .Distinct()
             .ToArray();
 
-        // SQL Server sẽ thực hiện JOIN, WHERE,
-        // GROUP BY và COUNT.
+        // Chỉ đếm tin nhắn:
+        // - Thuộc hội thoại của user
+        // - Do người khác gửi
+        // - Sequence lớn hơn Read Cursor
         //
-        // Không đưa toàn bộ Message entities
-        // về C# để đếm.
-        //
-        // Cursor lấy trực tiếp từ membership đang
-        // lưu trong DB tại thời điểm query, tránh
-        // sử dụng cursor cũ từ danh sách đã tải.
-        //
-        // Chỉ đếm tin từ người khác, sau cursor.
-        // Không lọc RecalledAtUtc: Recall vẫn unread.
-        //
-        // Không lọc Friendship/Block: lịch sử
-        // vẫn tồn tại sau Unfriend hoặc Block.
+        // Không loại bỏ tin đã Recall.
+        // Không phụ thuộc Friendship / Block.
 
         var counts = await (
             from member in db.ConversationMembers
                 .AsNoTracking()
-            join message in db.Messages.AsNoTracking()
+
+            join message in db.Messages
+                .AsNoTracking()
+
                 on member.ConversationId
                 equals message.ConversationId
+
             where
                 member.UserId == currentUserId &&
                 member.Conversation.Type ==
                     PrivateConversationType &&
-                ids.Contains(member.ConversationId) &&
+                ids.Contains(
+                    member.ConversationId) &&
                 message.SenderId != currentUserId &&
                 message.SequenceNumber >
                     member.LastReadSequence
+
             group message by member.ConversationId
             into grouped
+
             select new
             {
                 ConversationId = grouped.Key,
@@ -591,6 +774,78 @@ public sealed class ConversationService(
         return counts.ToDictionary(
             x => x.ConversationId,
             x => x.Count);
+    }
+
+    // =====================================================
+    // PHASE 5.8E3 - BATCH LAST MESSAGE PREVIEW
+    // =====================================================
+
+    private sealed record LastMessagePreview(
+        Guid ConversationId,
+        string? Content,
+        Guid SenderId,
+        bool IsRecalled);
+
+    private async Task<
+        Dictionary<Guid, LastMessagePreview>>
+        GetLastMessagePreviewsAsync(
+            IReadOnlyCollection<Guid> conversationIds,
+            CancellationToken cancellationToken)
+    {
+        if (conversationIds.Count == 0)
+        {
+            return new Dictionary<
+                Guid,
+                LastMessagePreview>();
+        }
+
+        var ids = conversationIds
+            .Distinct()
+            .ToArray();
+
+        // =================================================
+        // FETCH LATEST MESSAGE PER CONVERSATION
+        // =================================================
+
+        // Dùng GroupBy để lấy tin nhắn có
+        // SequenceNumber lớn nhất mỗi hội thoại.
+        //
+        // Chỉ lấy các trường cần cho preview,
+        // không tải toàn bộ Message entity.
+        //
+        // AsNoTracking để tránh EF tracking.
+        //
+        // SQL Server thực hiện truy vấn trên DB.
+
+        var messages = await db.Messages
+            .AsNoTracking()
+            .Where(m =>
+                ids.Contains(m.ConversationId))
+            .GroupBy(m => m.ConversationId)
+            .Select(group => group
+                .OrderByDescending(
+                    m => m.SequenceNumber)
+                .Select(m => new
+                {
+                    m.ConversationId,
+                    m.Content,
+                    m.SenderId,
+                    m.RecalledAtUtc
+                })
+                .First())
+            .ToListAsync(cancellationToken);
+
+        // =================================================
+        // BUILD DICTIONARY
+        // =================================================
+
+        return messages.ToDictionary(
+            message => message.ConversationId,
+            message => new LastMessagePreview(
+                message.ConversationId,
+                message.Content,
+                message.SenderId,
+                message.RecalledAtUtc != null));
     }
 
     // =====================================================
@@ -619,7 +874,10 @@ public sealed class ConversationService(
 
         var ids = result.Keys.ToList();
 
-        // Kiểm tra Friendship hai chiều.
+        // =================================================
+        // FRIENDSHIPS
+        // =================================================
+
         var friendships = await db.Friendships
             .AsNoTracking()
             .Where(x =>
@@ -634,7 +892,10 @@ public sealed class ConversationService(
             })
             .ToListAsync(cancellationToken);
 
-        // Kiểm tra Block cả hai chiều.
+        // =================================================
+        // BLOCKS
+        // =================================================
+
         var blocks = await db.UserBlocks
             .AsNoTracking()
             .Where(x =>
@@ -649,12 +910,20 @@ public sealed class ConversationService(
             })
             .ToListAsync(cancellationToken);
 
+        // =================================================
+        // MAP FRIEND IDS
+        // =================================================
+
         var friendIds = friendships
             .Select(x =>
                 x.UserAId == currentUserId
                     ? x.UserBId
                     : x.UserAId)
             .ToHashSet();
+
+        // =================================================
+        // MAP BLOCKED IDS
+        // =================================================
 
         var blockedIds = blocks
             .Select(x =>
@@ -663,18 +932,23 @@ public sealed class ConversationService(
                     : x.BlockerId)
             .ToHashSet();
 
+        // =================================================
+        // BUILD PERMISSIONS
+        // =================================================
+
         foreach (var id in ids)
         {
-            result[id] = new RelationshipPermission(
-                friendIds.Contains(id),
-                blockedIds.Contains(id));
+            result[id] =
+                new RelationshipPermission(
+                    friendIds.Contains(id),
+                    blockedIds.Contains(id));
         }
 
         return result;
     }
 
     // =====================================================
-    // MAPPING DTO
+    // MAPPING CONVERSATION DTO
     // =====================================================
 
     private static ConversationDto MapConversation(
@@ -683,33 +957,77 @@ public sealed class ConversationService(
         User otherUser,
         bool canSend,
         string? cannotSendReason,
-        int unreadCount = 0)
+        int unreadCount = 0,
+        LastMessagePreview? preview = null)
     {
         return new ConversationDto
         {
+            // =================================================
+            // CONVERSATION
+            // =================================================
+
             Id = conversation.Id,
             Type = conversation.Type,
+
+            // =================================================
+            // OTHER USER
+            // =================================================
 
             OtherUserId = otherUser.Id,
             OtherUsername = otherUser.Username,
             OtherDisplayName = otherUser.DisplayName,
             OtherAvatarUrl = otherUser.AvatarUrl,
 
-            CreatedAtUtc = conversation.CreatedAtUtc,
+            // =================================================
+            // CONVERSATION METADATA
+            // =================================================
+
+            CreatedAtUtc =
+                conversation.CreatedAtUtc,
+
             LastMessageAtUtc =
                 conversation.LastMessageAtUtc,
 
             LastMessageSequence =
                 conversation.LastMessageSequence,
 
+            // =================================================
+            // NEW - LAST MESSAGE PREVIEW
+            // =================================================
+
+            LastMessageContent =
+                preview == null
+                    ? null
+                    : preview.IsRecalled
+                        ? "Tin nhắn đã được thu hồi"
+                        : preview.Content,
+
+            LastMessageSenderId =
+                preview?.SenderId,
+
+            // =================================================
+            // EXISTING - READ CURSOR
+            // =================================================
+
             LastReadSequence =
                 lastReadSequence,
 
-            // PHASE 5.8B
-            UnreadCount = unreadCount,
+            // =================================================
+            // PHASE 5.8B - UNREAD COUNT
+            // =================================================
 
-            CanSendMessage = canSend,
-            CannotSendReason = cannotSendReason
+            UnreadCount =
+                unreadCount,
+
+            // =================================================
+            // EXISTING - PERMISSIONS
+            // =================================================
+
+            CanSendMessage =
+                canSend,
+
+            CannotSendReason =
+                cannotSendReason
         };
     }
 
@@ -730,18 +1048,22 @@ public sealed class ConversationService(
 
         if (!otherUserActive)
         {
-            return "Tài khoản người nhận hiện không khả dụng.";
+            return
+                "Tài khoản người nhận hiện " +
+                "không khả dụng.";
         }
 
         if (isBlocked)
         {
-            return "Không thể gửi tin nhắn vì một trong " +
-                   "hai người đã chặn người kia.";
+            return
+                "Không thể gửi tin nhắn vì " +
+                "một trong hai người đã chặn người kia.";
         }
 
         if (!areFriends)
         {
-            return "Hai người hiện không còn là bạn bè.";
+            return
+                "Hai người hiện không còn là bạn bè.";
         }
 
         return "Hiện không thể gửi tin nhắn.";

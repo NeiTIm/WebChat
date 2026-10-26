@@ -17,6 +17,10 @@ export default function ConversationList({
 
   onRefresh,
   onLoadMore,
+
+  // PHASE 5.8E3
+  onPreviewSeen,
+  currentUserId,
 }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -35,8 +39,7 @@ export default function ConversationList({
         conversation.name || ""
       ).toLocaleLowerCase("vi-VN");
 
-      const matchesSearch =
-        name.includes(keyword);
+      const matchesSearch = name.includes(keyword);
 
       const matchesFilter =
         filter === "all" ||
@@ -49,13 +52,8 @@ export default function ConversationList({
     });
   }, [conversations, filter, search]);
 
-  // =====================================================
-  // RENDER
-  // =====================================================
-
   return (
     <section className="conversation-panel">
-
       {/* HEADER */}
       <div className="conversation-panel-header">
         <div className="conversation-title-row">
@@ -182,6 +180,8 @@ export default function ConversationList({
                 String(conversation.id).toLowerCase()
               }
               onSelect={onSelect}
+              onPreviewSeen={onPreviewSeen}
+              currentUserId={currentUserId}
             />
           ))
         )}

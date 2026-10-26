@@ -21,16 +21,20 @@ public sealed class MessageReadController(
 ) : ControllerBase
 {
     // =====================================================
-    // PHASE 5.8A - MESSAGE READ SERVICE
+    // SERVICES
     // =====================================================
 
-    // Giữ service đọc tin nhắn của Phase 5.8A.
-    // Không thay đổi nghiệp vụ Read Cursor.
+    // Giữ nguyên Read Service đã có.
     private readonly MessageReadService _readService =
         new(db);
 
+    // Dùng lại Delivery Service hiện có.
+    // Không cần viết thêm Service mới.
+    private readonly MessageDeliveryService _deliveryService =
+        new(db);
+
     // =====================================================
-    // CURRENT USER FROM VALIDATED JWT
+    // CURRENT USER
     // =====================================================
 
     private Guid? GetCurrentUserId()
@@ -60,7 +64,7 @@ public sealed class MessageReadController(
         var currentUserId = GetCurrentUserId();
 
         // =================================================
-        // 1. VALIDATE JWT USER ID
+        // 1. VALIDATE AUTHENTICATION
         // =================================================
 
         if (!currentUserId.HasValue)
@@ -71,10 +75,6 @@ public sealed class MessageReadController(
             });
         }
 
-        // =================================================
-        // 2. VALIDATE CONVERSATION ID
-        // =================================================
-
         if (conversationId == Guid.Empty)
         {
             return BadRequest(new
@@ -82,10 +82,6 @@ public sealed class MessageReadController(
                 message = "ConversationId không hợp lệ."
             });
         }
-
-        // =================================================
-        // 3. VALIDATE REQUEST
-        // =================================================
 
         if (request is null)
         {
@@ -107,21 +103,17 @@ public sealed class MessageReadController(
         try
         {
             // =================================================
-            // 4. UPDATE READ CURSOR - PHASE 5.8A
+            // 2. SAVE READ CURSOR
             // =================================================
 
-            // MessageReadService xử lý:
-            // - Kiểm tra tài khoản active
-            // - Kiểm tra Private Conversation
+            // Giữ nguyên nghiệp vụ cũ:
+            // - Kiểm tra User Active
             // - Kiểm tra Conversation Membership
-            // - Kiểm tra Sequence tồn tại
-            // - Atomic Conditional Update
-            // - Read Cursor chỉ tăng, không rollback
-            // - Request trùng không cập nhật timestamp
-            //
-            // Service trả về sau khi SQL update hoàn tất.
+            // - Kiểm tra Sequence thực sự tồn tại
+            // - Read Cursor chỉ tăng
+            // - Không rollback khi request cũ hơn
 
-            var result =
+            var readResult =
                 await _readService.MarkAsReadAsync(
                     conversationId,
                     currentUserId.Value,
@@ -129,77 +121,152 @@ public sealed class MessageReadController(
                     cancellationToken);
 
             // =================================================
-            // 5. PUBLISH SIGNALR - PHASE 5.8C
+            // 3. ENSURE DELIVERED >= READ
             // =================================================
 
-            // Chỉ publish khi cursor thực sự tăng.
-            // changed=false không tạo Seen event.
+            // Logic mới của Phase 5.8E3:
             //
-            // Không lấy ReaderUserId từ client.
-            // ReaderUserId được lấy từ JWT.
+            // Nếu người dùng đã đọc đến sequence N,
+            // thì thiết bị cũng đã nhận đến N.
             //
-            // Publisher sẽ kiểm tra lại:
-            // - Conversation Membership
-            // - Read Cursor hiện tại
-            // - User Active
-            // - Friendship
-            // - Block
+            // Delivery Service sẽ:
+            // - Xác minh quyền
+            // - Kiểm tra sequence
+            // - Chỉ cập nhật nếu cursor tăng
             //
-            // Sự kiện được phát sau DB update,
-            // không tác động transaction Mark as Read.
+            // Không lấy online/presence làm ACK.
+            //
+            // Dùng LastReadSequence đã được DB
+            // xác nhận thay vì giá trị client tự gửi.
 
-            if (result.Changed)
+            MarkAsDeliveredResponse? deliveryResult =
+                null;
+
+            try
+            {
+                using var deliveryTimeout =
+                    new CancellationTokenSource(
+                        TimeSpan.FromSeconds(15));
+
+                deliveryResult =
+                    await _deliveryService
+                        .MarkAsDeliveredAsync(
+                            conversationId,
+                            currentUserId.Value,
+                            readResult.LastReadSequence,
+                            deliveryTimeout.Token);
+            }
+            catch (Exception ex)
+            {
+                // Read đã được ghi thành công.
+                //
+                // Không báo toàn bộ request thất bại
+                // rồi khiến client Retry nhầm.
+                //
+                // Lần Read tiếp theo vẫn có thể
+                // đồng bộ lại Delivered Cursor.
+
+                logger.LogWarning(
+                    ex,
+                    "Read saved but Delivered sync failed. " +
+                    "ConversationId={ConversationId}, " +
+                    "UserId={UserId}, " +
+                    "ReadSequence={Sequence}",
+                    conversationId,
+                    currentUserId.Value,
+                    readResult.LastReadSequence);
+            }
+
+            // =================================================
+            // 4. PUBLISH READ EVENT
+            // =================================================
+
+            // Chỉ phát sự kiện nếu Read Cursor tăng.
+            //
+            // Không ảnh hưởng dữ liệu SQL nếu
+            // SignalR bị mất kết nối.
+
+            if (readResult.Changed)
             {
                 try
                 {
-                    // Cancellation token độc lập với HTTP.
-                    // Nếu client ngắt request sau khi SQL
-                    // đã ghi thành công, vẫn thử phát event.
-                    //
-                    // Timeout để tránh giữ request quá lâu.
                     using var realtimeTimeout =
                         new CancellationTokenSource(
                             TimeSpan.FromSeconds(15));
 
                     await realtimePublisher
                         .PublishMessageReadUpdatedAsync(
-                            result,
+                            readResult,
                             currentUserId.Value,
                             realtimeTimeout.Token);
                 }
                 catch (Exception ex)
                 {
-                    // =================================================
-                    // 6. REALTIME BEST-EFFORT
-                    // =================================================
-
-                    // Database đã được cập nhật thành công.
-                    // Không trả lỗi 500 hoặc rollback cursor
-                    // chỉ vì SignalR publish thất bại.
-
                     logger.LogWarning(
                         ex,
                         "Read Cursor saved but SignalR " +
                         "MessageReadUpdated publish failed. " +
                         "ConversationId={ConversationId}, " +
                         "ReaderUserId={ReaderUserId}, " +
-                        "LastReadSequence={Sequence}",
+                        "Sequence={Sequence}",
                         conversationId,
                         currentUserId.Value,
-                        result.LastReadSequence);
+                        readResult.LastReadSequence);
                 }
             }
 
             // =================================================
-            // 7. RETURN AUTHORITATIVE RESULT
+            // 5. PUBLISH DELIVERED EVENT
             // =================================================
 
-            return Ok(result);
+            // Nếu Delivered Cursor tăng nhờ Read,
+            // thông báo realtime cho người gửi.
+            //
+            // Người gửi không cần F5 để nhận
+            // cursor mới nếu SignalR hoạt động.
+
+            if (deliveryResult?.Changed == true)
+            {
+                try
+                {
+                    using var realtimeTimeout =
+                        new CancellationTokenSource(
+                            TimeSpan.FromSeconds(15));
+
+                    await realtimePublisher
+                        .PublishMessageDeliveredUpdatedAsync(
+                            deliveryResult,
+                            currentUserId.Value,
+                            realtimeTimeout.Token);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Delivered Cursor saved after Read " +
+                        "but SignalR publish failed. " +
+                        "ConversationId={ConversationId}, " +
+                        "RecipientUserId={RecipientUserId}, " +
+                        "Sequence={Sequence}",
+                        conversationId,
+                        currentUserId.Value,
+                        deliveryResult.LastDeliveredSequence);
+                }
+            }
+
+            // =================================================
+            // 6. RETURN ORIGINAL READ RESPONSE
+            // =================================================
+
+            // Giữ nguyên response contract để
+            // Frontend MessageReadSync không phải sửa.
+
+            return Ok(readResult);
         }
 
-        // =================================================
-        // 8. ERROR HANDLING - PHASE 5.8A
-        // =================================================
+        // =====================================================
+        // 7. ERROR HANDLING
+        // =====================================================
 
         catch (ArgumentException ex)
         {
@@ -234,7 +301,8 @@ public sealed class MessageReadController(
 
             return Conflict(new
             {
-                message = "Dữ liệu hội thoại không hợp lệ."
+                message =
+                    "Dữ liệu hội thoại không hợp lệ."
             });
         }
     }

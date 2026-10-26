@@ -5,6 +5,9 @@ import {
   useRef,
 } from "react";
 
+import MessageStatusIndicator from "./MessageStatusIndicator";
+import { getMessageStatus } from "../utils/messageStatus";
+
 const LOAD_THRESHOLD = 120;
 
 function formatMessageDate(value) {
@@ -23,23 +26,25 @@ function formatMessageDate(value) {
   }).format(date);
 }
 
+function validSequence(value) {
+  return (
+    Number.isSafeInteger(value) &&
+    value > 0
+  );
+}
+
 export default function MessageList({
   messages = [],
   conversation,
+  conversationStatus = null,
   hasMore = false,
   loadingOlder = false,
   onLoadOlder,
 }) {
   const listRef = useRef(null);
-
   const initializedRef = useRef(false);
-
-  // Lưu tọa độ trước khi tải tin cũ.
   const prependSnapshotRef = useRef(null);
-
-  // Ghi nhận người dùng đang ở gần cuối hay không.
   const nearBottomRef = useRef(true);
-
   const loadingRequestRef = useRef(false);
 
   const previousMessagesRef = useRef({
@@ -84,7 +89,12 @@ export default function MessageList({
     } finally {
       loadingRequestRef.current = false;
     }
-  }, [hasMore, loadingOlder, messages, onLoadOlder]);
+  }, [
+    hasMore,
+    loadingOlder,
+    messages,
+    onLoadOlder,
+  ]);
 
   // =====================================================
   // SCROLL HANDLER
@@ -99,7 +109,7 @@ export default function MessageList({
       element.clientHeight;
 
     nearBottomRef.current =
-      distanceFromBottom <= 120;
+      distanceFromBottom <= LOAD_THRESHOLD;
 
     if (
       element.scrollTop <= LOAD_THRESHOLD &&
@@ -122,16 +132,16 @@ export default function MessageList({
     const firstId = messages[0]?.id ?? null;
     const lastId = messages.at(-1)?.id ?? null;
 
-    const previous = previousMessagesRef.current;
+    const previous =
+      previousMessagesRef.current;
 
-    const snapshot = prependSnapshotRef.current;
+    const snapshot =
+      prependSnapshotRef.current;
 
     if (
       snapshot &&
       firstId !== snapshot.firstId
     ) {
-      // DOM đã thêm tin cũ ở phía trên.
-      // Bù lại phần chiều cao vừa được thêm.
       const heightDifference =
         element.scrollHeight - snapshot.height;
 
@@ -150,23 +160,24 @@ export default function MessageList({
     }
 
     if (!initializedRef.current) {
-      // Lần tải đầu tiên: mở ở cuối cuộc trò chuyện.
       element.scrollTop = element.scrollHeight;
       initializedRef.current = true;
     } else if (!snapshot) {
       const newLastMessage =
         lastId !== previous.lastId;
 
-      const lastMessage = messages.at(-1);
+      const lastMessage =
+        messages.at(-1);
 
       if (
         newLastMessage &&
         (
           nearBottomRef.current ||
-          lastMessage?.sender === "me"
+          lastMessage.sender === "me"
         )
       ) {
-        element.scrollTop = element.scrollHeight;
+        element.scrollTop =
+          element.scrollHeight;
       }
     }
 
@@ -177,7 +188,58 @@ export default function MessageList({
     };
   }, [messages]);
 
-  if (!conversation) return null;
+  if (!conversation) {
+    return null;
+  }
+
+  // =====================================================
+  // PHASE 5.8E3 - LATEST CONFIRMED MESSAGE
+  // =====================================================
+
+  // Conversation metadata có thể cập nhật
+  // chậm hơn MessageCreated.
+  //
+  // Nhưng cũng không được hiển thị trạng thái
+  // của một tin cũ nếu server biết còn tin mới
+  // hơn chưa có trong danh sách đang tải.
+
+  const displayedLatestMessage =
+    messages.at(-1) ?? null;
+
+  const displayedLatestSequence =
+    displayedLatestMessage?.sequenceNumber;
+
+  const metadataLatestSequence =
+    conversation.lastMessageSequence;
+
+  const hasConfirmedLatestMessage =
+    Boolean(displayedLatestMessage?.id) &&
+    validSequence(displayedLatestSequence);
+
+  const metadataIsValid =
+    Number.isSafeInteger(metadataLatestSequence) &&
+    metadataLatestSequence >= 0;
+
+  // Nếu metadata thấp hơn tin mới đã được
+  // Backend xác nhận, dùng sequence của tin.
+  //
+  // Nếu metadata cao hơn, danh sách chưa có
+  // tin cuối thực tế: không hiện status sai.
+
+  const latestIsNotBehindMetadata =
+    !metadataIsValid ||
+    (
+      hasConfirmedLatestMessage &&
+      displayedLatestSequence >=
+        metadataLatestSequence
+    );
+
+  const statusMessageId =
+    hasConfirmedLatestMessage &&
+    latestIsNotBehindMetadata &&
+    displayedLatestMessage.sender === "me"
+      ? displayedLatestMessage.id
+      : null;
 
   return (
     <div
@@ -230,9 +292,11 @@ export default function MessageList({
           className="chat-intro-avatar"
           style={{
             backgroundColor:
-              conversation.avatarColor || "#e6efff",
+              conversation.avatarColor ||
+              "#e6efff",
             color:
-              conversation.avatarTextColor || "#2563eb",
+              conversation.avatarTextColor ||
+              "#2563eb",
           }}
         >
           {conversation.initials || "?"}
@@ -262,14 +326,18 @@ export default function MessageList({
 
       {/* MESSAGE ITEMS */}
       {messages.map((message, index) => {
-        const isMine = message.sender === "me";
+        const isMine =
+          message.sender === "me";
 
         const previousMessage =
-          index > 0 ? messages[index - 1] : null;
+          index > 0
+            ? messages[index - 1]
+            : null;
 
-        const currentDate = formatMessageDate(
-          message.createdAtUtc
-        );
+        const currentDate =
+          formatMessageDate(
+            message.createdAtUtc
+          );
 
         const previousDate = previousMessage
           ? formatMessageDate(
@@ -281,9 +349,26 @@ export default function MessageList({
           currentDate &&
           currentDate !== previousDate;
 
-        const recalled = Boolean(
-          message.recalledAtUtc
-        );
+        const recalled =
+          Boolean(message.recalledAtUtc);
+
+        // =============================================
+        // STATUS ONLY FOR ACTUAL LATEST MESSAGE
+        // =============================================
+
+        const showMessageStatus =
+          isMine &&
+          Boolean(statusMessageId) &&
+          message.id === statusMessageId &&
+          index === messages.length - 1;
+
+        const messageStatus =
+          showMessageStatus
+            ? getMessageStatus(
+                message,
+                conversationStatus
+              )
+            : null;
 
         return (
           <div key={message.id}>
@@ -301,11 +386,12 @@ export default function MessageList({
               }`}
             >
               <div className="message-content-wrapper">
-                {!isMine && message.senderName && (
-                  <span className="message-sender-name">
-                    {message.senderName}
-                  </span>
-                )}
+                {!isMine &&
+                  message.senderName && (
+                    <span className="message-sender-name">
+                      {message.senderName}
+                    </span>
+                  )}
 
                 <div
                   className="message-bubble"
@@ -329,6 +415,12 @@ export default function MessageList({
                     !recalled &&
                     " · Đã chỉnh sửa"}
                 </span>
+
+                {messageStatus && (
+                  <MessageStatusIndicator
+                    status={messageStatus}
+                  />
+                )}
               </div>
             </div>
           </div>

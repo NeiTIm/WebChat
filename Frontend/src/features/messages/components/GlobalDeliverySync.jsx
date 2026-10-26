@@ -5,6 +5,7 @@ import { useAuth } from "../../auth/hooks/useAuth";
 import { useChatRealtime } from "../../realtime/hooks/useChatRealtime";
 
 import { getConversationMessages } from "../api/messageApi";
+
 import {
   getDeliveryCursorPage,
   markAsDelivered,
@@ -16,20 +17,15 @@ import {
 } from "../utils/deliveryCursor";
 
 // =====================================================
-// CONFIGURATION
+// PHASE 5.8E3 - GLOBAL DELIVERY SYNC
 // =====================================================
 
-const MESSAGE_PAGE_SIZE = 50;
+const PAGE_SIZE = 50;
 const MAX_HISTORY_PAGES = 20;
-
-const CONVERSATION_PAGE_SIZE = 50;
 const MAX_CONVERSATION_PAGES = 200;
+const SYNC_DELAY = 300;
 
-const SYNC_DEBOUNCE_MS = 500;
-
-// =====================================================
-// HELPERS
-// =====================================================
+const DEBUG = import.meta.env.DEV;
 
 function normalizeId(value) {
   return String(value ?? "").trim().toLowerCase();
@@ -38,115 +34,149 @@ function normalizeId(value) {
 function isCanceled(error, signal) {
   return (
     signal?.aborted ||
-    error?.code === "ERR_CANCELED" ||
-    error?.name === "AbortError"
+    error?.name === "AbortError" ||
+    error?.code === "ERR_CANCELED"
   );
 }
 
+function log(...args) {
+  if (DEBUG) {
+    console.log("[Delivery Sync]", ...args);
+  }
+}
+
+function warn(...args) {
+  if (DEBUG) {
+    console.warn("[Delivery Sync]", ...args);
+  }
+}
+
 // =====================================================
-// FETCH DELIVERY CURSORS
+// 1. LOAD CONVERSATIONS
 // =====================================================
 
-async function loadDeliverySnapshots(signal) {
-  const snapshots = [];
+async function loadConversations(signal) {
+  const conversations = [];
 
   for (
     let page = 1;
     page <= MAX_CONVERSATION_PAGES;
-    page += 1
+    page++
   ) {
     signal.throwIfAborted();
 
-    const result = await getDeliveryCursorPage({
+    const response = await getDeliveryCursorPage({
       page,
-      pageSize: CONVERSATION_PAGE_SIZE,
+      pageSize: PAGE_SIZE,
       signal,
     });
 
     if (
-      !result ||
-      !Array.isArray(result.items) ||
-      !Number.isSafeInteger(result.totalPages)
+      !response ||
+      !Array.isArray(response.items) ||
+      !Number.isSafeInteger(response.totalPages) ||
+      response.totalPages < 0
     ) {
       throw new Error(
         "Delivery cursor response không hợp lệ."
       );
     }
 
-    snapshots.push(...result.items);
+    conversations.push(...response.items);
 
-    if (page >= result.totalPages) {
-      return snapshots;
+    if (page >= response.totalPages) {
+      return conversations;
     }
 
-    if (result.items.length === 0) {
+    if (response.items.length === 0) {
       throw new Error(
-        "Phân trang Delivery Cursor không đầy đủ."
+        "Không thể tải tiếp conversation."
       );
     }
   }
 
   throw new Error(
-    "Quá giới hạn phân trang Delivery Cursor."
+    "Quá giới hạn số trang conversation."
   );
 }
 
 // =====================================================
-// FETCH AND VERIFY CONTIGUOUS HISTORY
+// 2. VERIFY RECEIVED MESSAGES
 // =====================================================
 
-async function loadVerifiedMessages({
+// Chỉ ACK những sequence thực sự tải được
+// và liên tục từ cursor hiện tại.
+//
+// Ví dụ:
+// baseline = 116
+// target = 119
+// tải được 117,118,119
+// => ACK 119.
+//
+// Nếu thiếu 118
+// => chỉ ACK 117.
+//
+// Không tự bỏ qua khoảng trống lịch sử.
+
+async function verifyDelivery({
   conversationId,
   baseline,
   target,
   signal,
 }) {
   if (target <= baseline) {
-    return [];
+    return baseline;
   }
 
-  const received = new Map();
+  const messages = new Map();
 
   let beforeSequence = null;
 
   for (
     let page = 0;
     page < MAX_HISTORY_PAGES;
-    page += 1
+    page++
   ) {
     signal.throwIfAborted();
 
-    const result = await getConversationMessages(
+    const response = await getConversationMessages(
       conversationId,
       {
         beforeSequence,
-        pageSize: MESSAGE_PAGE_SIZE,
+        pageSize: PAGE_SIZE,
         signal,
       }
     );
 
     if (
-      normalizeId(result?.conversationId) !==
-        normalizeId(conversationId) ||
-      !Array.isArray(result.items)
+      normalizeId(response?.conversationId) !==
+        conversationId ||
+      !Array.isArray(response.items) ||
+      typeof response.hasMore !== "boolean"
     ) {
       throw new Error(
-        "Lịch sử tin nhắn không hợp lệ."
+        "Message history response không hợp lệ."
       );
     }
 
-    if (result.items.length === 0) {
+    if (response.items.length === 0) {
+      if (response.hasMore) {
+        throw new Error(
+          "Message pagination không tiến triển."
+        );
+      }
+
       break;
     }
 
     let lowestSequence = Number.MAX_SAFE_INTEGER;
 
-    for (const message of result.items) {
+    for (const message of response.items) {
       const sequence = message?.sequenceNumber;
 
       if (
         normalizeId(message?.conversationId) !==
-          normalizeId(conversationId) ||
+          conversationId ||
         !Number.isSafeInteger(sequence) ||
         sequence <= 0
       ) {
@@ -164,52 +194,43 @@ async function loadVerifiedMessages({
         sequence > baseline &&
         sequence <= target
       ) {
-        received.set(sequence, message);
+        messages.set(sequence, message);
       }
     }
 
-    // Đã tải tới sát baseline.
+    // Đã tải tới vị trí bắt đầu kiểm tra.
     if (lowestSequence <= baseline + 1) {
       break;
     }
 
-    // beforeSequence phải giảm liên tục.
     if (
       beforeSequence !== null &&
       lowestSequence >= beforeSequence
     ) {
       throw new Error(
-        "Phân trang lịch sử không tiến triển."
+        "Message pagination không tiến triển."
       );
     }
 
-    if (!result.hasMore) {
+    if (!response.hasMore) {
       break;
     }
 
     beforeSequence = lowestSequence;
   }
 
-  const messages = [...received.values()];
+  signal.throwIfAborted();
 
-  const contiguousCursor = findContiguousCursor({
+  return findContiguousCursor({
+    conversationId,
     baseline,
     target,
-    messages,
-    conversationId,
+    messages: [...messages.values()],
   });
-
-  // Không ACK khi thiếu bất kỳ sequence nào
-  // trong khoảng cần xác minh.
-  if (contiguousCursor < target) {
-    return null;
-  }
-
-  return messages;
 }
 
 // =====================================================
-// GLOBAL DELIVERY SYNC
+// 3. GLOBAL DELIVERY SYNC
 // =====================================================
 
 export default function GlobalDeliverySync() {
@@ -220,7 +241,10 @@ export default function GlobalDeliverySync() {
     isLoggingOut,
   } = useAuth();
 
-  const { subscribe, syncVersion } = useChatRealtime();
+  const {
+    subscribe,
+    syncVersion,
+  } = useChatRealtime();
 
   const userId = normalizeId(
     user?.id || user?.userId
@@ -236,32 +260,24 @@ export default function GlobalDeliverySync() {
       return undefined;
     }
 
-    // Toàn bộ biến này thuộc về một phiên effect.
-    // Khi user/logout/syncVersion thay đổi,
-    // cleanup sẽ hủy các request cũ.
-
     let active = true;
     let running = false;
     let rerun = false;
-    let timerId = null;
+    let syncAll = true;
 
-    let requestController = null;
+    let timer = null;
+    let controller = null;
 
-    const pendingConversationIds = new Set();
-
-    // null: đồng bộ toàn bộ conversation.
-    // Set: đồng bộ các conversation được yêu cầu.
-    let synchronizeAll = true;
+    const pendingIds = new Set();
 
     // =================================================
     // SYNC ONE CONVERSATION
     // =================================================
 
-    async function synchronizeConversation(
-      item,
-      signal
-    ) {
-      const conversationId = item?.conversationId;
+    async function syncConversation(item, signal) {
+      const conversationId = normalizeId(
+        item?.conversationId
+      );
 
       const baseline =
         item?.myLastDeliveredSequence;
@@ -272,65 +288,78 @@ export default function GlobalDeliverySync() {
       if (
         !conversationId ||
         !isValidSequence(baseline) ||
-        !isValidSequence(target) ||
-        target <= baseline
+        !isValidSequence(target)
       ) {
+        warn("Invalid snapshot", item);
         return;
       }
 
-      const messages = await loadVerifiedMessages({
+      if (target <= baseline) {
+        return;
+      }
+
+      log("Verifying", {
         conversationId,
         baseline,
         target,
-        signal,
       });
 
-      if (!messages || signal.aborted || !active) {
+      const verifiedCursor =
+        await verifyDelivery({
+          conversationId,
+          baseline,
+          target,
+          signal,
+        });
+
+      if (!active || signal.aborted) {
         return;
       }
 
-      const contiguousCursor = findContiguousCursor({
-        baseline,
-        target,
-        messages,
-        conversationId,
-      });
+      if (verifiedCursor <= baseline) {
+        warn("History gap, ACK skipped", {
+          conversationId,
+          baseline,
+          target,
+        });
 
-      if (contiguousCursor <= baseline) {
         return;
       }
 
-      // Kiểm tra lại session local trước khi
-      // phát request. Authentication middleware
-      // backend vẫn là lớp bảo mật quyết định.
-      signal.throwIfAborted();
-
-      const result = await markAsDelivered(
+      // Chỉ gửi sequence đã xác minh.
+      const response = await markAsDelivered(
         conversationId,
-        contiguousCursor,
+        verifiedCursor,
         { signal }
       );
 
       if (
-        normalizeId(result?.conversationId) !==
-          normalizeId(conversationId) ||
+        normalizeId(response?.conversationId) !==
+          conversationId ||
         !isValidSequence(
-          result?.lastDeliveredSequence
+          response?.lastDeliveredSequence
         ) ||
-        result.lastDeliveredSequence <
-          contiguousCursor
+        response.lastDeliveredSequence <
+          verifiedCursor
       ) {
         throw new Error(
           "Delivered ACK response không hợp lệ."
         );
       }
+
+      log("Delivered ACK success", {
+        conversationId,
+        requested: verifiedCursor,
+        saved: response.lastDeliveredSequence,
+        changed: response.changed,
+      });
     }
 
     // =================================================
-    // SYNC ALL OR TARGETED CONVERSATIONS
+    // RUN SYNC
     // =================================================
 
-    async function runSynchronization() {
+    async function runSync() {
       if (!active) {
         return;
       }
@@ -342,113 +371,112 @@ export default function GlobalDeliverySync() {
 
       running = true;
 
-      const controller = new AbortController();
+      const currentController =
+        new AbortController();
 
-      requestController = controller;
+      controller = currentController;
 
-      // Lấy snapshot yêu cầu trước khi bắt đầu.
-      const all = synchronizeAll;
+      const shouldSyncAll = syncAll;
+      const requestedIds = new Set(pendingIds);
 
-      const targets = new Set(
-        pendingConversationIds
-      );
-
-      synchronizeAll = false;
-      pendingConversationIds.clear();
+      syncAll = false;
+      pendingIds.clear();
 
       try {
-        const snapshots = await loadDeliverySnapshots(
-          controller.signal
-        );
+        const snapshots =
+          await loadConversations(
+            currentController.signal
+          );
 
-        if (!active || controller.signal.aborted) {
+        if (
+          !active ||
+          currentController.signal.aborted
+        ) {
           return;
         }
 
-        const selected = all
+        const selected = shouldSyncAll
           ? snapshots
           : snapshots.filter((item) =>
-              targets.has(
+              requestedIds.has(
                 normalizeId(item.conversationId)
               )
             );
 
-        // ACK lần lượt từng conversation.
-        // Không gửi request song song cạnh tranh
-        // trong cùng effect.
+        log("Synchronization started", {
+          userId,
+          conversations: selected.length,
+        });
+
         for (const item of selected) {
-          if (!active || controller.signal.aborted) {
+          if (
+            !active ||
+            currentController.signal.aborted
+          ) {
             break;
           }
 
           try {
-            await synchronizeConversation(
+            await syncConversation(
               item,
-              controller.signal
+              currentController.signal
             );
           } catch (error) {
             if (
               isCanceled(
                 error,
-                controller.signal
+                currentController.signal
               )
             ) {
               break;
             }
 
-            if (import.meta.env.DEV) {
-              console.warn(
-                "[WebChat 5.8D4] Sync failed:",
-                item?.conversationId,
-                error
-              );
-            }
+            warn(
+              "Conversation sync failed",
+              item?.conversationId,
+              error
+            );
           }
         }
       } catch (error) {
         if (
           active &&
-          !isCanceled(error, controller.signal) &&
-          import.meta.env.DEV
+          !isCanceled(
+            error,
+            currentController.signal
+          )
         ) {
-          console.warn(
-            "[WebChat 5.8D4] Global sync failed:",
-            error
-          );
+          warn("Global sync failed", error);
         }
       } finally {
-        if (requestController === controller) {
-          requestController = null;
+        if (controller === currentController) {
+          controller = null;
         }
 
         running = false;
 
-        // Các event đến trong lúc đang đồng bộ
-        // được xử lý bằng lượt tiếp theo.
         if (active && rerun) {
           rerun = false;
-          scheduleSynchronization();
+          scheduleSync();
         }
       }
     }
 
     // =================================================
-    // SCHEDULE SYNCHRONIZATION
+    // SCHEDULE SYNC
     // =================================================
 
-    function scheduleSynchronization(
-      conversationId = null
-    ) {
+    function scheduleSync(conversationId = null) {
       if (!active) {
         return;
       }
 
       if (conversationId) {
-        pendingConversationIds.add(
+        pendingIds.add(
           normalizeId(conversationId)
         );
       } else {
-        synchronizeAll = true;
+        syncAll = true;
       }
 
       if (running) {
@@ -456,48 +484,57 @@ export default function GlobalDeliverySync() {
         return;
       }
 
-      if (timerId !== null) {
-        clearTimeout(timerId);
+      if (timer !== null) {
+        clearTimeout(timer);
       }
 
-      timerId = setTimeout(() => {
-        timerId = null;
-        void runSynchronization();
-      }, SYNC_DEBOUNCE_MS);
+      timer = setTimeout(() => {
+        timer = null;
+        void runSync();
+      }, SYNC_DELAY);
     }
 
     // =================================================
-    // REALTIME MESSAGE CREATED
+    // MESSAGE CREATED
     // =================================================
 
     const unsubscribeMessage = subscribe(
       "MessageCreated",
       (message) => {
-        if (message?.conversationId) {
-          scheduleSynchronization(
-            message.conversationId
-          );
+        const conversationId = normalizeId(
+          message?.conversationId
+        );
+
+        if (!conversationId) {
+          return;
         }
+
+        log(
+          "MessageCreated received",
+          conversationId,
+          message?.sequenceNumber
+        );
+
+        // Không yêu cầu người dùng mở chat.
+        scheduleSync(conversationId);
       }
     );
 
     // =================================================
-    // CONVERSATION METADATA UPDATED
+    // CONVERSATION UPDATED
     // =================================================
 
     const unsubscribeConversation = subscribe(
       "ConversationUpdated",
       (payload) => {
         if (payload?.conversationId) {
-          scheduleSynchronization(
-            payload.conversationId
-          );
+          scheduleSync(payload.conversationId);
         }
       }
     );
 
     // =================================================
-    // DELIVERED CURSOR UPDATED
+    // DELIVERED UPDATED
     // =================================================
 
     const unsubscribeDelivered = subscribe(
@@ -505,28 +542,23 @@ export default function GlobalDeliverySync() {
       (payload) => {
         if (
           normalizeId(payload?.recipientUserId) !==
-          userId ||
+            userId ||
           !payload?.conversationId
         ) {
           return;
         }
 
-        // Lấy lại baseline từ SQL Server.
-        // Không tự lấy sequence trong event
-        // làm bằng chứng đã nhận đủ history.
-        scheduleSynchronization(
-          payload.conversationId
-        );
+        // Thiết bị khác vừa ACK.
+        // Đọc lại snapshot từ Backend.
+        scheduleSync(payload.conversationId);
       }
     );
 
     // =================================================
-    // START GLOBAL SYNC
+    // INITIAL / RECONNECT
     // =================================================
 
-    // Chạy khi đăng nhập, đồng thời chạy lại
-    // sau syncVersion thay đổi (reconnect).
-    scheduleSynchronization();
+    scheduleSync();
 
     // =================================================
     // CLEANUP
@@ -535,14 +567,12 @@ export default function GlobalDeliverySync() {
     return () => {
       active = false;
 
-      if (timerId !== null) {
-        clearTimeout(timerId);
-        timerId = null;
+      if (timer !== null) {
+        clearTimeout(timer);
       }
 
-      requestController?.abort();
-
-      pendingConversationIds.clear();
+      controller?.abort();
+      pendingIds.clear();
 
       unsubscribeMessage();
       unsubscribeConversation();

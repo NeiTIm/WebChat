@@ -1,17 +1,23 @@
 
 import axiosClient from "../../../api/axiosClient";
 
+// GUID có đúng 5 nhóm:
+// 8-4-4-4-12
 const GUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const EMPTY_GUID =
+  "00000000-0000-0000-0000-000000000000";
 
 function validateConversationId(conversationId) {
   if (
     typeof conversationId !== "string" ||
     !GUID_PATTERN.test(conversationId) ||
-    conversationId ===
-      "00000000-0000-0000-0000-000000000000"
+    conversationId.toLowerCase() === EMPTY_GUID
   ) {
-    throw new Error("ConversationId không hợp lệ.");
+    throw new Error(
+      "ConversationId không hợp lệ."
+    );
   }
 }
 
@@ -33,11 +39,29 @@ export async function markAsDelivered(
 
   const response = await axiosClient.post(
     `/api/conversations/${conversationId}/delivered`,
-    { lastDeliveredSequence },
-    { signal }
+    {
+      lastDeliveredSequence,
+    },
+    {
+      signal,
+    }
   );
 
-  return response.data;
+  const data = response.data;
+
+  if (
+    !data ||
+    String(data.conversationId).toLowerCase() !==
+      conversationId.toLowerCase() ||
+    !Number.isSafeInteger(data.lastDeliveredSequence) ||
+    data.lastDeliveredSequence < lastDeliveredSequence
+  ) {
+    throw new Error(
+      "Delivered response không hợp lệ."
+    );
+  }
+
+  return data;
 }
 
 export async function getDeliveryCursorPage({
@@ -46,21 +70,24 @@ export async function getDeliveryCursorPage({
   signal,
 } = {}) {
   if (
-    !Number.isInteger(page) ||
+    !Number.isSafeInteger(page) ||
     page < 1 ||
-    !Number.isInteger(pageSize) ||
+    !Number.isSafeInteger(pageSize) ||
     pageSize < 1 ||
     pageSize > 50
   ) {
     throw new Error(
-      "Pagination Delivery Cursor không hợp lệ."
+      "Pagination không hợp lệ."
     );
   }
 
   const response = await axiosClient.get(
     "/api/delivery/cursors",
     {
-      params: { page, pageSize },
+      params: {
+        page,
+        pageSize,
+      },
       signal,
     }
   );

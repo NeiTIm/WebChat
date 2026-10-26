@@ -1,7 +1,11 @@
 
 using System.Security.Claims;
+
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
+using WebChat.Api.Data;
 using WebChat.Api.DTOs.Conversations;
 using WebChat.Api.Services.Conversations;
 
@@ -11,7 +15,8 @@ namespace WebChat.Api.Controllers;
 [Authorize]
 [Route("api/conversations")]
 public sealed class ConversationsController(
-    IConversationService conversationService
+    IConversationService conversationService,
+    AppDbContext db
 ) : ControllerBase
 {
     // =====================================================
@@ -21,13 +26,129 @@ public sealed class ConversationsController(
     private Guid? GetCurrentUserId()
     {
         var value = User.FindFirstValue(
-            ClaimTypes.NameIdentifier
-        );
+            ClaimTypes.NameIdentifier);
 
-        return Guid.TryParse(value, out var userId)
-            && userId != Guid.Empty
+        return Guid.TryParse(value, out var userId) &&
+               userId != Guid.Empty
             ? userId
             : null;
+    }
+
+    // =====================================================
+    // 5.8E1 - POPULATE READ / DELIVERED CURSORS
+    // =====================================================
+
+    // Chỉ dùng cho những ConversationDto đã được
+    // ConversationService kiểm tra quyền truy cập.
+    //
+    // Không thay thế logic authorization của service.
+    // Không ghi dữ liệu hoặc thay đổi Read Cursor.
+    //
+    // Dùng 1 batch query cho danh sách hội thoại.
+    private async Task PopulateStatusCursorsAsync(
+        Guid currentUserId,
+        IReadOnlyCollection<ConversationDto> conversations,
+        CancellationToken cancellationToken)
+    {
+        if (conversations.Count == 0)
+        {
+            return;
+        }
+
+        var ids = conversations
+            .Select(x => x.Id)
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .ToArray();
+
+        if (ids.Length == 0)
+        {
+            return;
+        }
+
+        var memberships = await db.ConversationMembers
+            .AsNoTracking()
+            .Where(m =>
+                ids.Contains(m.ConversationId) &&
+                m.LeftAtUtc == null)
+            .Select(m => new
+            {
+                m.ConversationId,
+                m.UserId,
+                m.LastReadSequence,
+                m.LastDeliveredSequence
+            })
+            .ToListAsync(cancellationToken);
+
+        var byConversation = memberships
+            .GroupBy(m => m.ConversationId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToList());
+
+        foreach (var conversation in conversations)
+        {
+            if (
+                !byConversation.TryGetValue(
+                    conversation.Id,
+                    out var members) ||
+                members.Count != 2
+            )
+            {
+                throw new InvalidOperationException(
+                    "Dữ liệu thành viên hội thoại " +
+                    "không nhất quán.");
+            }
+
+            var myMembership = members
+                .SingleOrDefault(m =>
+                    m.UserId == currentUserId);
+
+            var otherMembership = members
+                .SingleOrDefault(m =>
+                    m.UserId == conversation.OtherUserId);
+
+            if (
+                myMembership is null ||
+                otherMembership is null ||
+                conversation.OtherUserId == Guid.Empty ||
+                conversation.OtherUserId == currentUserId
+            )
+            {
+                throw new InvalidOperationException(
+                    "Dữ liệu thành viên hội thoại " +
+                    "không nhất quán.");
+            }
+
+            // =============================================
+            // READ CURSORS
+            // =============================================
+
+            conversation.MyLastReadSequence =
+                myMembership.LastReadSequence;
+
+            conversation.OtherLastReadSequence =
+                otherMembership.LastReadSequence;
+
+            // Đồng bộ trường cũ để các consumer cũ
+            // vẫn nhận đúng Read Cursor của mình.
+            conversation.LastReadSequence =
+                myMembership.LastReadSequence;
+
+            // =============================================
+            // DELIVERED CURSORS
+            // =============================================
+
+            conversation.MyLastDeliveredSequence =
+                myMembership.LastDeliveredSequence;
+
+            conversation.OtherLastDeliveredSequence =
+                otherMembership.LastDeliveredSequence;
+
+            // Không sửa UnreadCount.
+            // Giá trị đã được ConversationService
+            // tính trong Phase 5.8B.
+        }
     }
 
     // =====================================================
@@ -63,7 +184,8 @@ public sealed class ConversationsController(
         {
             return BadRequest(new
             {
-                message = "Không thể tạo hội thoại với chính mình."
+                message =
+                    "Không thể tạo hội thoại với chính mình."
             });
         }
 
@@ -75,13 +197,19 @@ public sealed class ConversationsController(
                     request.TargetUserId,
                     cancellationToken);
 
+            await PopulateStatusCursorsAsync(
+                currentUserId.Value,
+                new[] { conversation },
+                cancellationToken);
+
             return Ok(conversation);
         }
         catch (ArgumentException)
         {
             return BadRequest(new
             {
-                message = "Thông tin người dùng không hợp lệ."
+                message =
+                    "Thông tin người dùng không hợp lệ."
             });
         }
         catch (InvalidOperationException ex)
@@ -165,6 +293,11 @@ public sealed class ConversationsController(
                 pageSize,
                 cancellationToken);
 
+        await PopulateStatusCursorsAsync(
+            currentUserId.Value,
+            result.Items,
+            cancellationToken);
+
         return Ok(result);
     }
 
@@ -205,9 +338,6 @@ public sealed class ConversationsController(
 
         if (conversation is null)
         {
-            // Cùng một phản hồi cho:
-            // - Conversation không tồn tại
-            // - Người dùng không thuộc Conversation
             return NotFound(new
             {
                 message =
@@ -215,6 +345,11 @@ public sealed class ConversationsController(
                     "bạn không có quyền truy cập."
             });
         }
+
+        await PopulateStatusCursorsAsync(
+            currentUserId.Value,
+            new[] { conversation },
+            cancellationToken);
 
         return Ok(conversation);
     }

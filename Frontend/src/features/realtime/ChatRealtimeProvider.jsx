@@ -179,7 +179,19 @@ export default function ChatRealtimeProvider({ children }) {
     for (const eventName of REALTIME_EVENTS) {
       connection.on(eventName, (payload) => {
         if (!active) return;
-
+        if (
+              import.meta.env.DEV &&
+              (
+                eventName === "MessageReadUpdated" ||
+                eventName === "MessageDeliveredUpdated"
+              )
+            ) {
+              console.info("[5.8E3 SignalR]", {
+                eventName,
+                payload,
+                currentUserId: userId,
+              });
+            }
         if (eventName === "SyncRequired") {
           requestReconciliation();
         }

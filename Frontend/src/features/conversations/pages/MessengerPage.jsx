@@ -12,9 +12,12 @@ import { useAuth } from "../../auth/hooks/useAuth";
 import { useChatRealtime } from "../../realtime/hooks/useChatRealtime";
 import { useConversationPresence } from "../../realtime/hooks/useConversationPresence";
 
+import axiosClient from "../../../api/axiosClient";
+
 import ConversationList from "../components/ConversationList";
 import ChatHeader from "../components/ChatHeader";
 import ConversationMessagesPanel from "../components/ConversationMessagesPanel";
+import ConversationStatusBridge from "../components/ConversationStatusBridge";
 
 import {
   getMyConversations,
@@ -86,12 +89,24 @@ function toConversationViewModel(dto) {
     avatarColor: "#e6efff",
     avatarTextColor: "#2563eb",
     online: null,
-    unreadCount: null,
+    unreadCount: dto.unreadCount ?? 0,
 
     lastMessage:
-      dto.lastMessageSequence > 0
-        ? "Mở để xem tin nhắn"
-        : "Chưa có tin nhắn",
+      typeof dto.lastMessageContent === "string"
+        ? dto.lastMessageContent
+        : dto.lastMessageSequence > 0
+          ? "Mở để xem tin nhắn"
+          : "Chưa có tin nhắn",
+
+    lastMessageContent: dto.lastMessageContent,
+    lastMessageSenderId: dto.lastMessageSenderId,
+    lastMessagePreviewSequence:
+      Number.isSafeInteger(dto.lastMessagePreviewSequence)
+        ? dto.lastMessagePreviewSequence
+        : typeof dto.lastMessageContent === "string" &&
+            dto.lastMessageSenderId
+          ? dto.lastMessageSequence
+          : null,
 
     lastMessageTime: formatMessageTime(
       dto.lastMessageAtUtc
@@ -182,10 +197,103 @@ function applyConversationUpdate(item, payload) {
   return {
     ...item,
     lastMessageSequence: incomingSequence,
+    // Preview cũ không còn hợp lệ cho sequence mới.
+    lastMessagePreviewSequence: null,
+    lastMessageContent: null,
+    lastMessageSenderId: null,
     lastMessageAtUtc:
       payload.lastMessageAtUtc ??
       item.lastMessageAtUtc,
   };
+}
+
+function applyMessagePreview(item, message) {
+  if (
+    !item ||
+    !message ||
+    normalizeId(item.id) !== normalizeId(message.conversationId)
+  ) {
+    return item;
+  }
+
+  const sequence = message.sequenceNumber;
+  if (
+    !Number.isSafeInteger(sequence) ||
+    sequence <= 0 ||
+    typeof message.content !== "string" ||
+    !message.senderId
+  ) {
+    return item;
+  }
+
+  const currentSequence = item.lastMessageSequence ?? 0;
+  const currentPreviewSequence = item.lastMessagePreviewSequence ?? 0;
+
+  if (sequence < currentSequence || sequence < currentPreviewSequence) {
+    return item;
+  }
+
+  const content = message.recalledAtUtc
+    ? "Tin nhắn đã được thu hồi"
+    : message.content;
+
+  return {
+    ...item,
+    lastMessageSequence: sequence,
+    lastMessagePreviewSequence: sequence,
+    lastMessageContent: content,
+    lastMessage: content,
+    lastMessageSenderId: message.senderId,
+    lastMessageAtUtc: message.createdAtUtc ?? item.lastMessageAtUtc,
+  };
+}
+
+// REST chỉ ghi đè trạng thái realtime khi có cùng hoặc sequence mới hơn.
+function mergeConversationSnapshot(current, incoming) {
+  if (!current) return incoming;
+  const currentSeq = current.lastMessageSequence ?? 0;
+  const incomingSeq = incoming.lastMessageSequence ?? 0;
+
+  if (currentSeq > incomingSeq) {
+    return {
+      ...incoming,
+      lastMessageSequence: currentSeq,
+      lastMessageAtUtc: current.lastMessageAtUtc,
+      lastMessageContent: current.lastMessageContent,
+      lastMessageSenderId: current.lastMessageSenderId,
+      lastMessagePreviewSequence: current.lastMessagePreviewSequence,
+      lastReadSequence: Math.max(
+        current.lastReadSequence ?? 0,
+        incoming.lastReadSequence ?? 0
+      ),
+    };
+  }
+
+  if (currentSeq === incomingSeq) {
+    const currentHasPreview =
+      current.lastMessagePreviewSequence === currentSeq &&
+      typeof current.lastMessageContent === "string";
+    const incomingHasPreview =
+      typeof incoming.lastMessageContent === "string" &&
+      Boolean(incoming.lastMessageSenderId);
+
+    return {
+      ...incoming,
+      ...(currentHasPreview && !incomingHasPreview
+        ? {
+            lastMessageContent: current.lastMessageContent,
+            lastMessageSenderId: current.lastMessageSenderId,
+            lastMessagePreviewSequence: current.lastMessagePreviewSequence,
+          }
+        : {}),
+      lastReadSequence: Math.max(
+        current.lastReadSequence ?? 0,
+        incoming.lastReadSequence ?? 0
+      ),
+    };
+  }
+
+  return incoming;
 }
 
 // =====================================================
@@ -257,6 +365,114 @@ export default function MessengerPage() {
   const listError = listReady
     ? listState.error || loadMoreError
     : "";
+
+  // =====================================================
+  // 5.8E3 - READ ACK FROM VISIBLE PREVIEW
+  // =====================================================
+
+  const previewReadBusyRef = useRef(new Set());
+  const previewReadConfirmedRef = useRef(new Map());
+
+  const currentUserId = user?.id || user?.userId || null;
+  const normalizedCurrentUserId = normalizeId(currentUserId);
+
+  const handlePreviewSeen = useCallback(
+    async (rawConversationId, sequence) => {
+      const id = normalizeId(rawConversationId);
+      if (
+        !id ||
+        !normalizedCurrentUserId ||
+        !Number.isSafeInteger(sequence) ||
+        sequence <= 0 ||
+        document.visibilityState !== "visible" ||
+        !document.hasFocus()
+      ) {
+        return;
+      }
+
+      const state = listStateRef.current;
+      if (state.key !== listKey) return;
+
+      const conversation = state.items.find(
+        (item) => normalizeId(item.id) === id
+      );
+      if (
+        !conversation ||
+        conversation.lastMessageSequence !== sequence ||
+        conversation.lastMessagePreviewSequence !== sequence ||
+        typeof conversation.lastMessageContent !== "string" ||
+        !conversation.lastMessageContent.trim() ||
+        !conversation.lastMessageSenderId ||
+        normalizeId(conversation.lastMessageSenderId) ===
+          normalizedCurrentUserId ||
+        conversation.lastMessageContent === "Tin nhắn đã được thu hồi"
+      ) {
+        return;
+      }
+
+      const alreadyRead = Math.max(
+        conversation.lastReadSequence ?? 0,
+        previewReadConfirmedRef.current.get(id) ?? 0
+      );
+      if (sequence <= alreadyRead || previewReadBusyRef.current.has(id)) {
+        return;
+      }
+
+      previewReadBusyRef.current.add(id);
+      try {
+        const response = await axiosClient.post(
+          `/api/conversations/${encodeURIComponent(id)}/read`,
+          { lastReadSequence: sequence }
+        );
+
+        const acknowledgedSequence = response.data?.lastReadSequence;
+        if (
+          !Number.isSafeInteger(acknowledgedSequence) ||
+          acknowledgedSequence < sequence
+        ) {
+          throw new Error("Read ACK không hợp lệ.");
+        }
+
+        previewReadConfirmedRef.current.set(id, acknowledgedSequence);
+        setListState((previous) => ({
+          ...previous,
+          items: previous.items.map((item) =>
+            normalizeId(item.id) === id
+              ? {
+                  ...item,
+                  lastReadSequence: Math.max(
+                    item.lastReadSequence ?? 0,
+                    acknowledgedSequence
+                  ),
+                  myLastReadSequence: Math.max(
+                    item.myLastReadSequence ?? 0,
+                    acknowledgedSequence
+                  ),
+                  unreadCount:
+                    (item.lastMessageSequence ?? 0) <= acknowledgedSequence
+                      ? 0
+                      : item.unreadCount,
+                }
+              : item
+          ),
+        }));
+
+        if (import.meta.env.DEV) {
+          console.info("[Preview Seen] Read ACK success", {
+            conversationId: id,
+            sequence: acknowledgedSequence,
+          });
+        }
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.warn("[Preview Seen] Read ACK failed", id, error);
+        }
+      } finally {
+        previewReadBusyRef.current.delete(id);
+      }
+    },
+    [normalizedCurrentUserId, listKey]
+  );
 
   // =====================================================
   // CONVERSATION DETAIL
@@ -827,6 +1043,85 @@ export default function MessengerPage() {
   // REALTIME CONVERSATION UPDATED
   // =====================================================
 
+  // =====================================================
+  // 5.8E3 - REALTIME LAST MESSAGE PREVIEW
+  // =====================================================
+
+  useEffect(() => {
+    function handleMessageCreated(message) {
+      const id = normalizeId(
+        message?.conversationId
+      );
+
+      if (!id) {
+        return;
+      }
+
+      // Cập nhật danh sách hội thoại hiện tại.
+      setListState((previous) => {
+        if (previous.key !== listKey) {
+          return previous;
+        }
+
+        let changed = false;
+
+        const items = previous.items.map((item) => {
+          if (normalizeId(item.id) !== id) {
+            return item;
+          }
+
+          const next = applyMessagePreview(
+            item,
+            message
+          );
+
+          if (next !== item) {
+            changed = true;
+          }
+
+          return next;
+        });
+
+        if (!changed) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          items: sortConversations(items),
+        };
+      });
+
+      // Cập nhật metadata của hội thoại đang mở.
+      // Không remount MessagePanel.
+      setDetailState((previous) => {
+        if (
+          !previous.data ||
+          normalizeId(previous.id) !== id
+        ) {
+          return previous;
+        }
+
+        const data = applyMessagePreview(
+          previous.data,
+          message
+        );
+
+        return data === previous.data
+          ? previous
+          : {
+              ...previous,
+              data,
+            };
+      });
+    }
+
+    return subscribe(
+      "MessageCreated",
+      handleMessageCreated
+    );
+  }, [subscribe, listKey]);
+
   useEffect(() => {
     let active = true;
 
@@ -1002,12 +1297,6 @@ export default function MessengerPage() {
   // =====================================================
   // 5.7.8D3B - REALTIME PERMISSION EVENTS
   // =====================================================
-
-  const currentUserId =
-    user?.id || user?.userId || null;
-
-  const normalizedCurrentUserId =
-    normalizeId(currentUserId);
 
   useEffect(() => {
     // =============================================
@@ -1307,33 +1596,8 @@ export default function MessengerPage() {
           );
 
           const merged = collected.map((item) => {
-            const current = byId.get(
-              normalizeId(item.id)
-            );
-
-            if (!current) {
-              return item;
-            }
-
-            // Không ghi đè metadata tin nhắn
-            // mới hơn đã nhận từ SignalR.
-
-            if (
-              (current.lastMessageSequence ?? 0) >
-              (item.lastMessageSequence ?? 0)
-            ) {
-              return {
-                ...item,
-
-                lastMessageSequence:
-                  current.lastMessageSequence,
-
-                lastMessageAtUtc:
-                  current.lastMessageAtUtc,
-              };
-            }
-
-            return item;
+            const current = byId.get(normalizeId(item.id));
+            return mergeConversationSnapshot(current, item);
           });
 
           // Giữ những hội thoại đã tải nhưng
@@ -1455,8 +1719,15 @@ export default function MessengerPage() {
 
         const items = sortConversations(
           deduplicateConversations([
+            ...data.items.map((item) =>
+              mergeConversationSnapshot(
+                previous.items.find((existing) =>
+                  normalizeId(existing.id) === normalizeId(item.id)
+                ),
+                item
+              )
+            ),
             ...previous.items,
-            ...data.items,
           ])
         );
 
@@ -1587,6 +1858,8 @@ export default function MessengerPage() {
           hasMore={hasMore}
           onRefresh={handleRefresh}
           onLoadMore={handleLoadMore}
+          onPreviewSeen={handlePreviewSeen}
+          currentUserId={currentUserId}
         />
 
         {listSyncError && (
@@ -1677,6 +1950,11 @@ export default function MessengerPage() {
           </div>
         ) : selectedConversationWithPresence ? (
           <>
+            {/* PHASE 5.8E2 - SYNC REST STATUS CURSORS */}
+            <ConversationStatusBridge
+              conversation={detailState.data}
+            />
+
             {/* =====================================
                 CHAT HEADER
                 ===================================== */}
