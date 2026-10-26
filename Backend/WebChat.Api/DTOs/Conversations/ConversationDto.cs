@@ -23,6 +23,11 @@ public sealed class ConversationDto
 
     public long LastReadSequence { get; set; }
 
+    // PHASE 5.8B
+    // Số tin nhắn từ người khác nằm sau Read Cursor.
+    // Chỉ là giá trị tính toán, không lưu vào database.
+    public int UnreadCount { get; set; }
+
     // Quyền gửi tin, được tính từ Friendship,
     // Block và trạng thái tài khoản hiện tại.
     public bool CanSendMessage { get; set; }

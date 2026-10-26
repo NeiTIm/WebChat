@@ -12,6 +12,9 @@ import ProtectedRoute from "./routes/ProtectedRoute";
 import ChatRealtimeProvider from
   "./features/realtime/ChatRealtimeProvider";
 
+import GlobalDeliverySync from
+  "./features/messages/components/GlobalDeliverySync";
+
 import LoginPage from "./features/auth/pages/LoginPage";
 import RegisterPage from "./features/auth/pages/RegisterPage";
 
@@ -107,6 +110,8 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <ChatRealtimeProvider>
+          {/* PHASE 5.8D4 - GLOBAL DELIVERY ACK */}
+          <GlobalDeliverySync />
           <AppRoutes />
         </ChatRealtimeProvider>
       </AuthProvider>

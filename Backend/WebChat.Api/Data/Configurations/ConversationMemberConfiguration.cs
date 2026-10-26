@@ -1,3 +1,4 @@
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using WebChat.Api.Models;
@@ -12,10 +13,27 @@ public sealed class ConversationMemberConfiguration
     {
         builder.ToTable("ConversationMembers", table =>
         {
+            // =================================================
+            // EXISTING - READ CURSOR
+            // =================================================
+
             table.HasCheckConstraint(
                 "CK_ConversationMembers_LastReadSequence",
                 "[LastReadSequence] >= 0"
             );
+
+            // =================================================
+            // PHASE 5.8D1 - DELIVERY CURSOR
+            // =================================================
+
+            table.HasCheckConstraint(
+                "CK_ConversationMembers_LastDeliveredSequence",
+                "[LastDeliveredSequence] >= 0"
+            );
+
+            // =================================================
+            // EXISTING - MEMBERSHIP
+            // =================================================
 
             table.HasCheckConstraint(
                 "CK_ConversationMembers_LeftAtUtc",
@@ -24,10 +42,18 @@ public sealed class ConversationMemberConfiguration
             );
         });
 
+        // =====================================================
+        // PRIMARY KEY
+        // =====================================================
+
         builder.HasKey(x => x.Id);
 
         builder.Property(x => x.Id)
             .ValueGeneratedNever();
+
+        // =====================================================
+        // MEMBERSHIP DATES
+        // =====================================================
 
         builder.Property(x => x.JoinedAtUtc)
             .HasColumnType("datetime2(7)")
@@ -35,6 +61,10 @@ public sealed class ConversationMemberConfiguration
 
         builder.Property(x => x.LeftAtUtc)
             .HasColumnType("datetime2(7)");
+
+        // =====================================================
+        // PHASE 5.8A - READ CURSOR
+        // =====================================================
 
         builder.Property(x => x.LastReadSequence)
             .HasColumnType("bigint")
@@ -44,6 +74,22 @@ public sealed class ConversationMemberConfiguration
         builder.Property(x => x.LastReadAtUtc)
             .HasColumnType("datetime2(7)");
 
+        // =====================================================
+        // PHASE 5.8D1 - DELIVERY CURSOR
+        // =====================================================
+
+        builder.Property(x => x.LastDeliveredSequence)
+            .HasColumnType("bigint")
+            .HasDefaultValue(0L)
+            .IsRequired();
+
+        builder.Property(x => x.LastDeliveredAtUtc)
+            .HasColumnType("datetime2(7)");
+
+        // =====================================================
+        // MEMBERSHIP SETTINGS
+        // =====================================================
+
         builder.Property(x => x.IsArchived)
             .HasDefaultValue(false)
             .IsRequired();
@@ -51,6 +97,10 @@ public sealed class ConversationMemberConfiguration
         builder.Property(x => x.IsMuted)
             .HasDefaultValue(false)
             .IsRequired();
+
+        // =====================================================
+        // EXISTING INDEXES
+        // =====================================================
 
         // Một User chỉ có một Membership
         // trong cùng Conversation.
@@ -73,6 +123,10 @@ public sealed class ConversationMemberConfiguration
             },
             "IX_ConversationMembers_User_Conversation"
         );
+
+        // =====================================================
+        // EXISTING RELATIONSHIPS
+        // =====================================================
 
         builder.HasOne(x => x.Conversation)
             .WithMany(x => x.Members)

@@ -24,19 +24,50 @@ const STATUS = {
   RECONNECTING: "reconnecting",
 };
 
+
 const REALTIME_EVENTS = [
+  // =====================================================
+  // 5.7 - MESSAGE REALTIME
+  // =====================================================
+
   "MessageCreated",
   "ConversationUpdated",
   "ConversationPermissionChanged",
   "SyncRequired",
+
+  // =====================================================
+  // TYPING
+  // =====================================================
+
   "TypingStarted",
   "TypingStopped",
+
+  // =====================================================
+  // 5.7.7 - PRESENCE
+  // =====================================================
+
   "PresenceChanged",
 
-  // 5.7.8B
+  // =====================================================
+  // 5.7.8B - FRIENDS REALTIME
+  // =====================================================
+
   "FriendRequestChanged",
   "FriendshipChanged",
+
+  // =====================================================
+  // 5.8C - SEEN REALTIME
+  // =====================================================
+
+  "MessageReadUpdated",
+
+  // =====================================================
+  // 5.8D3 - DELIVERED REALTIME
+  // =====================================================
+
+  "MessageDeliveredUpdated",
 ];
+
 
 function normalizeId(value) {
   return String(value ?? "").trim().toLowerCase();

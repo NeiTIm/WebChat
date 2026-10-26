@@ -215,6 +215,12 @@ public sealed class ConversationService(
 
         await transaction.CommitAsync(cancellationToken);
 
+        // PHASE 5.8B: Unread snapshot sau commit.
+        var unreadCounts = await GetUnreadCountsAsync(
+            currentUserId,
+            [conversation.Id],
+            cancellationToken);
+
         return MapConversation(
             conversation,
             myMembership.LastReadSequence,
@@ -224,7 +230,9 @@ public sealed class ConversationService(
                 canSend,
                 areFriends,
                 isBlocked,
-                otherUser.IsActive));
+                otherUser.IsActive),
+            unreadCounts.GetValueOrDefault(
+                conversation.Id));
     }
 
     // =====================================================
@@ -333,6 +341,12 @@ public sealed class ConversationService(
             permission.AreFriends &&
             !permission.IsBlocked;
 
+        // PHASE 5.8B
+        var unreadCounts = await GetUnreadCountsAsync(
+            currentUserId,
+            [conversationId],
+            cancellationToken);
+
         return MapConversation(
             conversation,
             membership.LastReadSequence,
@@ -342,7 +356,9 @@ public sealed class ConversationService(
                 canSend,
                 permission.AreFriends,
                 permission.IsBlocked,
-                otherUser.IsActive));
+                otherUser.IsActive),
+            unreadCounts.GetValueOrDefault(
+                conversationId));
     }
 
     // =====================================================
@@ -449,6 +465,22 @@ public sealed class ConversationService(
                 otherUserIds,
                 cancellationToken);
 
+        // =================================================
+        // PHASE 5.8B - BATCH UNREAD COUNT
+        // =================================================
+
+        // Chỉ đếm cho những hội thoại thuộc trang này.
+        // Không truy vấn unread riêng trong vòng foreach.
+        var conversationIds = memberships
+            .Select(x => x.ConversationId)
+            .Distinct()
+            .ToArray();
+
+        var unreadCounts = await GetUnreadCountsAsync(
+            currentUserId,
+            conversationIds,
+            cancellationToken);
+
         foreach (var membership in memberships)
         {
             var conversation = membership.Conversation;
@@ -489,10 +521,76 @@ public sealed class ConversationService(
                         canSend,
                         permission.AreFriends,
                         permission.IsBlocked,
-                        otherUser.IsActive)));
+                        otherUser.IsActive),
+                    unreadCounts.GetValueOrDefault(
+                        conversation.Id)));
         }
 
         return response;
+    }
+
+    // =====================================================
+    // PHASE 5.8B - SERVER-SIDE BATCH UNREAD COUNT
+    // =====================================================
+
+    private async Task<Dictionary<Guid, int>>
+        GetUnreadCountsAsync(
+            Guid currentUserId,
+            IReadOnlyCollection<Guid> conversationIds,
+            CancellationToken cancellationToken)
+    {
+        if (currentUserId == Guid.Empty ||
+            conversationIds.Count == 0)
+        {
+            return new Dictionary<Guid, int>();
+        }
+
+        var ids = conversationIds
+            .Distinct()
+            .ToArray();
+
+        // SQL Server sẽ thực hiện JOIN, WHERE,
+        // GROUP BY và COUNT.
+        //
+        // Không đưa toàn bộ Message entities
+        // về C# để đếm.
+        //
+        // Cursor lấy trực tiếp từ membership đang
+        // lưu trong DB tại thời điểm query, tránh
+        // sử dụng cursor cũ từ danh sách đã tải.
+        //
+        // Chỉ đếm tin từ người khác, sau cursor.
+        // Không lọc RecalledAtUtc: Recall vẫn unread.
+        //
+        // Không lọc Friendship/Block: lịch sử
+        // vẫn tồn tại sau Unfriend hoặc Block.
+
+        var counts = await (
+            from member in db.ConversationMembers
+                .AsNoTracking()
+            join message in db.Messages.AsNoTracking()
+                on member.ConversationId
+                equals message.ConversationId
+            where
+                member.UserId == currentUserId &&
+                member.Conversation.Type ==
+                    PrivateConversationType &&
+                ids.Contains(member.ConversationId) &&
+                message.SenderId != currentUserId &&
+                message.SequenceNumber >
+                    member.LastReadSequence
+            group message by member.ConversationId
+            into grouped
+            select new
+            {
+                ConversationId = grouped.Key,
+                Count = grouped.Count()
+            }
+        ).ToListAsync(cancellationToken);
+
+        return counts.ToDictionary(
+            x => x.ConversationId,
+            x => x.Count);
     }
 
     // =====================================================
@@ -584,7 +682,8 @@ public sealed class ConversationService(
         long lastReadSequence,
         User otherUser,
         bool canSend,
-        string? cannotSendReason)
+        string? cannotSendReason,
+        int unreadCount = 0)
     {
         return new ConversationDto
         {
@@ -605,6 +704,9 @@ public sealed class ConversationService(
 
             LastReadSequence =
                 lastReadSequence,
+
+            // PHASE 5.8B
+            UnreadCount = unreadCount,
 
             CanSendMessage = canSend,
             CannotSendReason = cannotSendReason

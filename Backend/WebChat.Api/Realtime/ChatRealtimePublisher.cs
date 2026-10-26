@@ -1,10 +1,13 @@
 
+using System.Data;
+
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 using WebChat.Api.Data;
 using WebChat.Api.DTOs.Messages;
 using WebChat.Api.Hubs;
+using WebChat.Api.Services.Friends;
 
 namespace WebChat.Api.Realtime;
 
@@ -62,7 +65,6 @@ public sealed class ChatRealtimePublisher(
             .Select(id => id.ToString("D"))
             .ToArray();
 
-        // Tin nhắn đã lưu thành công trong SQL.
         await hubContext.Clients
             .Users(userIds)
             .SendAsync(
@@ -70,7 +72,6 @@ public sealed class ChatRealtimePublisher(
                 message,
                 cancellationToken);
 
-        // Yêu cầu cập nhật danh sách hội thoại.
         await hubContext.Clients
             .Users(userIds)
             .SendAsync(
@@ -219,10 +220,7 @@ public sealed class ChatRealtimePublisher(
                 nameof(action));
         }
 
-        // =================================================
-        // 1. REVOKE PRESENCE AFTER BLOCK / UNFRIEND
-        // =================================================
-
+        // Thu hồi Presence sau Unfriend/Block.
         if (
             action == "removed" ||
             action == "blocked"
@@ -230,14 +228,6 @@ public sealed class ChatRealtimePublisher(
         {
             try
             {
-                // Gỡ đăng ký theo dõi cả hai chiều
-                // khi Friendship hoặc quyền xem bị mất.
-                //
-                // RevokeRelationshipAsync:
-                // - Xóa FriendWatch
-                // - Xóa ConversationWatch
-                // - Thông báo accessRevoked
-                // - Không xóa dữ liệu SQL
                 await presenceService
                     .RevokeRelationshipAsync(
                         actorUserId,
@@ -251,8 +241,6 @@ public sealed class ChatRealtimePublisher(
             }
             catch (Exception ex)
             {
-                // Không để một lỗi Presence ngăn
-                // các sự kiện Friendship tiếp theo.
                 logger.LogWarning(
                     ex,
                     "Presence revoke failed after " +
@@ -265,14 +253,10 @@ public sealed class ChatRealtimePublisher(
             }
         }
 
-        // =================================================
-        // 2. PUBLISH FRIENDSHIP TO ACTOR
-        // =================================================
-
         var eventId = Guid.NewGuid();
-
         var occurredAtUtc = DateTime.UtcNow;
 
+        // Phát FriendshipChanged cho Actor.
         await hubContext.Clients
             .User(actorUserId.ToString("D"))
             .SendAsync(
@@ -287,15 +271,8 @@ public sealed class ChatRealtimePublisher(
                 },
                 cancellationToken);
 
-        // =================================================
-        // 3. PUBLISH FRIENDSHIP TO TARGET
-        // =================================================
-
-        // Không tiết lộ trực tiếp rằng người kia
-        // đã block/unblock mình.
-        //
-        // Frontend tự đọc trạng thái hiện tại
-        // từ REST API, vốn áp dụng quyền của user.
+        // Không tiết lộ trực tiếp Block/Unblock
+        // cho người đối diện.
         var targetAction =
             action is "blocked" or "unblocked"
                 ? "changed"
@@ -315,10 +292,7 @@ public sealed class ChatRealtimePublisher(
                 },
                 cancellationToken);
 
-        // =================================================
-        // 4. REFRESH EXISTING PRIVATE CONVERSATION
-        // =================================================
-
+        // Refresh quyền của conversation hiện có.
         try
         {
             var conversationId =
@@ -341,9 +315,6 @@ public sealed class ChatRealtimePublisher(
         }
         catch (Exception ex)
         {
-            // FriendshipChanged đã được phát.
-            // Không phát lại event chỉ vì lỗi
-            // khi yêu cầu cập nhật quyền hội thoại.
             logger.LogWarning(
                 ex,
                 "ConversationPermissionChanged failed " +
@@ -362,6 +333,418 @@ public sealed class ChatRealtimePublisher(
     }
 
     // =====================================================
+    // 5.8C - MESSAGE READ UPDATED
+    // =====================================================
+
+    public async Task PublishMessageReadUpdatedAsync(
+        MarkAsReadResponse result,
+        Guid readerUserId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        if (
+            !result.Changed ||
+            result.ConversationId == Guid.Empty ||
+            readerUserId == Guid.Empty ||
+            result.LastReadSequence <= 0
+        )
+        {
+            return;
+        }
+
+        var recipients = await GetPrivateRecipientsAsync(
+            result.ConversationId,
+            cancellationToken);
+
+        if (
+            recipients is null ||
+            !recipients.Contains(readerUserId)
+        )
+        {
+            logger.LogWarning(
+                "Skip MessageReadUpdated: invalid membership. " +
+                "ConversationId={ConversationId}, Reader={ReaderUserId}",
+                result.ConversationId,
+                readerUserId);
+
+            return;
+        }
+
+        var otherUserId = recipients.Single(
+            id => id != readerUserId);
+
+        var readerActive = await db.Users
+            .AsNoTracking()
+            .AnyAsync(
+                x =>
+                    x.Id == readerUserId &&
+                    x.IsActive,
+                cancellationToken);
+
+        if (!readerActive)
+        {
+            return;
+        }
+
+        var readState = await db.ConversationMembers
+            .AsNoTracking()
+            .Where(x =>
+                x.ConversationId == result.ConversationId &&
+                x.UserId == readerUserId &&
+                x.LeftAtUtc == null)
+            .Select(x => new
+            {
+                x.LastReadSequence,
+                x.LastReadAtUtc
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (
+            readState is null ||
+            readState.LastReadSequence <= 0 ||
+            readState.LastReadAtUtc is null
+        )
+        {
+            return;
+        }
+
+        var payload = new
+        {
+            ConversationId = result.ConversationId,
+            ReaderUserId = readerUserId,
+            LastReadSequence = readState.LastReadSequence,
+            LastReadAtUtc = readState.LastReadAtUtc
+        };
+
+        // Các thiết bị của chính người đọc.
+        await hubContext.Clients
+            .User(readerUserId.ToString("D"))
+            .SendAsync(
+                "MessageReadUpdated",
+                payload,
+                cancellationToken);
+
+        // Revalidate Friendship/Block dưới FriendPairLock.
+        await using var transaction =
+            await db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+
+        await FriendPairLock.AcquireAsync(
+            db,
+            readerUserId,
+            otherUserId,
+            cancellationToken);
+
+        var validRecipients = await GetPrivateRecipientsAsync(
+            result.ConversationId,
+            cancellationToken);
+
+        if (
+            validRecipients is null ||
+            !validRecipients.Contains(readerUserId) ||
+            !validRecipients.Contains(otherUserId)
+        )
+        {
+            return;
+        }
+
+        var activeUsers = await db.Users
+            .AsNoTracking()
+            .CountAsync(
+                x =>
+                    (x.Id == readerUserId ||
+                     x.Id == otherUserId) &&
+                    x.IsActive,
+                cancellationToken);
+
+        if (activeUsers != 2)
+        {
+            return;
+        }
+
+        var areFriends = await db.Friendships
+            .AsNoTracking()
+            .AnyAsync(
+                x =>
+                    (x.UserAId == readerUserId &&
+                     x.UserBId == otherUserId) ||
+                    (x.UserAId == otherUserId &&
+                     x.UserBId == readerUserId),
+                cancellationToken);
+
+        if (!areFriends)
+        {
+            return;
+        }
+
+        var isBlocked = await db.UserBlocks
+            .AsNoTracking()
+            .AnyAsync(
+                x =>
+                    (x.BlockerId == readerUserId &&
+                     x.BlockedId == otherUserId) ||
+                    (x.BlockerId == otherUserId &&
+                     x.BlockedId == readerUserId),
+                cancellationToken);
+
+        if (isBlocked)
+        {
+            return;
+        }
+
+        await hubContext.Clients
+            .User(otherUserId.ToString("D"))
+            .SendAsync(
+                "MessageReadUpdated",
+                payload,
+                cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+
+        logger.LogDebug(
+            "MessageReadUpdated published. " +
+            "ConversationId={ConversationId}, " +
+            "Reader={ReaderUserId}, Sequence={Sequence}",
+            result.ConversationId,
+            readerUserId,
+            readState.LastReadSequence);
+    }
+
+    // =====================================================
+    // 5.8D3 - MESSAGE DELIVERED UPDATED
+    // =====================================================
+
+    public async Task PublishMessageDeliveredUpdatedAsync(
+        MarkAsDeliveredResponse result,
+        Guid recipientUserId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        // Không phát nếu REST ACK không tăng cursor.
+        if (
+            !result.Changed ||
+            result.ConversationId == Guid.Empty ||
+            recipientUserId == Guid.Empty ||
+            result.LastDeliveredSequence <= 0
+        )
+        {
+            return;
+        }
+
+        // =================================================
+        // 1. VERIFY EXACT PRIVATE RECIPIENTS
+        // =================================================
+
+        var recipients = await GetPrivateRecipientsAsync(
+            result.ConversationId,
+            cancellationToken);
+
+        if (
+            recipients is null ||
+            !recipients.Contains(recipientUserId)
+        )
+        {
+            logger.LogWarning(
+                "Skip MessageDeliveredUpdated: " +
+                "invalid membership. " +
+                "ConversationId={ConversationId}, " +
+                "RecipientUserId={RecipientUserId}",
+                result.ConversationId,
+                recipientUserId);
+
+            return;
+        }
+
+        var otherUserId = recipients.Single(
+            id => id != recipientUserId);
+
+        // =================================================
+        // 2. CHECK RECIPIENT IS ACTIVE
+        // =================================================
+
+        var recipientActive = await db.Users
+            .AsNoTracking()
+            .AnyAsync(
+                x =>
+                    x.Id == recipientUserId &&
+                    x.IsActive,
+                cancellationToken);
+
+        if (!recipientActive)
+        {
+            return;
+        }
+
+        // =================================================
+        // 3. LOAD AUTHORITATIVE DELIVERY CURSOR
+        // =================================================
+
+        var deliveryState = await db.ConversationMembers
+            .AsNoTracking()
+            .Where(x =>
+                x.ConversationId == result.ConversationId &&
+                x.UserId == recipientUserId &&
+                x.LeftAtUtc == null)
+            .Select(x => new
+            {
+                x.LastDeliveredSequence,
+                x.LastDeliveredAtUtc
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (
+            deliveryState is null ||
+            deliveryState.LastDeliveredSequence <= 0 ||
+            deliveryState.LastDeliveredAtUtc is null
+        )
+        {
+            return;
+        }
+
+        // Một thiết bị khác có thể đã ACK lên sequence
+        // cao hơn trong lúc publisher chuẩn bị event.
+        // Vì vậy đọc cursor mới nhất từ SQL Server.
+        var payload = new
+        {
+            ConversationId = result.ConversationId,
+            RecipientUserId = recipientUserId,
+            LastDeliveredSequence =
+                deliveryState.LastDeliveredSequence,
+            LastDeliveredAtUtc =
+                deliveryState.LastDeliveredAtUtc
+        };
+
+        // =================================================
+        // 4. SYNC RECIPIENT'S OWN DEVICES
+        // =================================================
+
+        // Phát cho tài khoản tự ACK ngay cả sau
+        // Unfriend/Block để đồng bộ cursor lịch sử.
+        await hubContext.Clients
+            .User(recipientUserId.ToString("D"))
+            .SendAsync(
+                "MessageDeliveredUpdated",
+                payload,
+                cancellationToken);
+
+        // =================================================
+        // 5. COORDINATE RELATIONSHIP WITH PAIR LOCK
+        // =================================================
+
+        // Transaction này KHÔNG ghi Delivery Cursor.
+        // FriendPairLock phối hợp với Block/Unfriend
+        // để tránh TOCTOU khi kiểm tra quan hệ.
+        await using var transaction =
+            await db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+
+        await FriendPairLock.AcquireAsync(
+            db,
+            recipientUserId,
+            otherUserId,
+            cancellationToken);
+
+        // =================================================
+        // 6. REVALIDATE MEMBERSHIP
+        // =================================================
+
+        var validRecipients = await GetPrivateRecipientsAsync(
+            result.ConversationId,
+            cancellationToken);
+
+        if (
+            validRecipients is null ||
+            !validRecipients.Contains(recipientUserId) ||
+            !validRecipients.Contains(otherUserId)
+        )
+        {
+            return;
+        }
+
+        // =================================================
+        // 7. REVALIDATE ACTIVE ACCOUNTS
+        // =================================================
+
+        var activeUserCount = await db.Users
+            .AsNoTracking()
+            .CountAsync(
+                x =>
+                    (x.Id == recipientUserId ||
+                     x.Id == otherUserId) &&
+                    x.IsActive,
+                cancellationToken);
+
+        if (activeUserCount != 2)
+        {
+            return;
+        }
+
+        // =================================================
+        // 8. REVALIDATE FRIENDSHIP
+        // =================================================
+
+        var areFriends = await db.Friendships
+            .AsNoTracking()
+            .AnyAsync(
+                x =>
+                    (x.UserAId == recipientUserId &&
+                     x.UserBId == otherUserId) ||
+                    (x.UserAId == otherUserId &&
+                     x.UserBId == recipientUserId),
+                cancellationToken);
+
+        if (!areFriends)
+        {
+            return;
+        }
+
+        // =================================================
+        // 9. REVALIDATE BLOCK IN BOTH DIRECTIONS
+        // =================================================
+
+        var isBlocked = await db.UserBlocks
+            .AsNoTracking()
+            .AnyAsync(
+                x =>
+                    (x.BlockerId == recipientUserId &&
+                     x.BlockedId == otherUserId) ||
+                    (x.BlockerId == otherUserId &&
+                     x.BlockedId == recipientUserId),
+                cancellationToken);
+
+        if (isBlocked)
+        {
+            return;
+        }
+
+        // =================================================
+        // 10. PUBLISH TO THE OTHER USER
+        // =================================================
+
+        await hubContext.Clients
+            .User(otherUserId.ToString("D"))
+            .SendAsync(
+                "MessageDeliveredUpdated",
+                payload,
+                cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+
+        logger.LogDebug(
+            "MessageDeliveredUpdated published. " +
+            "ConversationId={ConversationId}, " +
+            "Recipient={RecipientUserId}, " +
+            "Sequence={Sequence}",
+            result.ConversationId,
+            recipientUserId,
+            deliveryState.LastDeliveredSequence);
+    }
+
+    // =====================================================
     // FIND EXISTING PRIVATE CONVERSATION
     // =====================================================
 
@@ -370,9 +753,6 @@ public sealed class ChatRealtimePublisher(
         Guid secondUserId,
         CancellationToken cancellationToken)
     {
-        // Không tạo Conversation mới.
-        // Không sửa dữ liệu hiện tại.
-
         return db.Conversations
             .AsNoTracking()
             .Where(c =>
@@ -381,8 +761,7 @@ public sealed class ChatRealtimePublisher(
                     (
                         c.PrivateUserLowId == firstUserId &&
                         c.PrivateUserHighId == secondUserId
-                    )
-                    ||
+                    ) ||
                     (
                         c.PrivateUserLowId == secondUserId &&
                         c.PrivateUserHighId == firstUserId
@@ -456,13 +835,11 @@ public sealed class ChatRealtimePublisher(
             return null;
         }
 
-        var memberIds =
-            await db.ConversationMembers
-                .AsNoTracking()
-                .Where(m =>
-                    m.ConversationId == conversationId)
-                .Select(m => m.UserId)
-                .ToListAsync(cancellationToken);
+        var memberIds = await db.ConversationMembers
+            .AsNoTracking()
+            .Where(m => m.ConversationId == conversationId)
+            .Select(m => m.UserId)
+            .ToListAsync(cancellationToken);
 
         if (
             memberIds.Count != 2 ||

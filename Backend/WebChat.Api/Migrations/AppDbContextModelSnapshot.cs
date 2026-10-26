@@ -94,6 +94,14 @@ namespace WebChat.Api.Migrations
                     b.Property<DateTime>("JoinedAtUtc")
                         .HasColumnType("datetime2(7)");
 
+                    b.Property<DateTime?>("LastDeliveredAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<long>("LastDeliveredSequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
                     b.Property<DateTime?>("LastReadAtUtc")
                         .HasColumnType("datetime2(7)");
 
@@ -117,6 +125,8 @@ namespace WebChat.Api.Migrations
 
                     b.ToTable("ConversationMembers", null, t =>
                         {
+                            t.HasCheckConstraint("CK_ConversationMembers_LastDeliveredSequence", "[LastDeliveredSequence] >= 0");
+
                             t.HasCheckConstraint("CK_ConversationMembers_LastReadSequence", "[LastReadSequence] >= 0");
 
                             t.HasCheckConstraint("CK_ConversationMembers_LeftAtUtc", "[LeftAtUtc] IS NULL OR [LeftAtUtc] >= [JoinedAtUtc]");
