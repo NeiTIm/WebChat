@@ -1,3 +1,5 @@
+
+import { useState } from "react";
 import { Users } from "lucide-react";
 
 export default function ConversationItem({
@@ -5,6 +7,18 @@ export default function ConversationItem({
   selected,
   onSelect,
 }) {
+  const [failedAvatar, setFailedAvatar] = useState(null);
+
+  if (!conversation) return null;
+
+  const avatarUrl = conversation.avatarUrl;
+
+  const showAvatar =
+    avatarUrl &&
+    failedAvatar !== avatarUrl;
+
+  const isGroup = conversation.type === "group";
+
   return (
     <button
       type="button"
@@ -18,19 +32,36 @@ export default function ConversationItem({
         <div
           className="conversation-avatar"
           style={{
-            backgroundColor: conversation.avatarColor,
-            color: conversation.avatarTextColor,
+            backgroundColor:
+              conversation.avatarColor || "#e6efff",
+            color:
+              conversation.avatarTextColor || "#2563eb",
+            overflow: "hidden",
           }}
         >
-          {conversation.type === "group" ? (
+          {showAvatar ? (
+            <img
+              src={avatarUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+              onError={() => setFailedAvatar(avatarUrl)}
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                borderRadius: "50%",
+              }}
+            />
+          ) : isGroup ? (
             <Users size={23} />
           ) : (
-            conversation.initials
+            conversation.initials || "?"
           )}
         </div>
 
-        {conversation.online &&
-          conversation.type === "private" && (
+        {/* Chỉ hiển thị online khi có dữ liệu thật */}
+        {conversation.online === true &&
+          !isGroup && (
             <span className="online-indicator" />
           )}
       </div>
@@ -42,7 +73,7 @@ export default function ConversationItem({
           </span>
 
           <span className="conversation-time">
-            {conversation.lastMessageTime}
+            {conversation.lastMessageTime || ""}
           </span>
         </div>
 
@@ -54,7 +85,10 @@ export default function ConversationItem({
                 : ""
             }`}
           >
-            {conversation.lastMessage}
+            {conversation.canSendMessage === false
+              ? "Chỉ đọc · Không thể gửi tin"
+              : conversation.lastMessage ||
+                "Chưa có tin nhắn"}
           </span>
 
           {conversation.unreadCount > 0 && (

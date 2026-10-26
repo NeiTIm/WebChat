@@ -47,6 +47,18 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<FriendAuditLog> FriendAuditLogs
         => Set<FriendAuditLog>();
+    // =====================================================
+    // CHAT - GIAI ĐOẠN 5
+    // =====================================================
+
+    public DbSet<Conversation> Conversations
+        => Set<Conversation>();
+
+    public DbSet<ConversationMember> ConversationMembers
+        => Set<ConversationMember>();
+
+    public DbSet<Message> Messages
+        => Set<Message>();
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
     {

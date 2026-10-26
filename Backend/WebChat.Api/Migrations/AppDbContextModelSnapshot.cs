@@ -22,6 +22,107 @@ namespace WebChat.Api.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("WebChat.Api.Models.Conversation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LastMessageAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<long>("LastMessageSequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.Property<Guid?>("PrivateUserHighId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("PrivateUserLowId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte>("Type")
+                        .HasColumnType("tinyint");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("PrivateUserHighId");
+
+                    b.HasIndex(new[] { "LastMessageAtUtc", "Id" }, "IX_Conversations_LastMessageAtUtc");
+
+                    b.HasIndex(new[] { "PrivateUserLowId", "PrivateUserHighId" }, "UX_Conversations_PrivatePair")
+                        .IsUnique()
+                        .HasFilter("[Type] = 1");
+
+                    b.ToTable("Conversations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Conversations_LastMessageSequence", "[LastMessageSequence] >= 0");
+
+                            t.HasCheckConstraint("CK_Conversations_TypeAndPrivatePair", "(\r\n    [Type] = 1\r\n    AND [PrivateUserLowId] IS NOT NULL\r\n    AND [PrivateUserHighId] IS NOT NULL\r\n    AND [PrivateUserLowId] < [PrivateUserHighId]\r\n)\r\nOR\r\n(\r\n    [Type] = 2\r\n    AND [PrivateUserLowId] IS NULL\r\n    AND [PrivateUserHighId] IS NULL\r\n)");
+                        });
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.ConversationMember", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("IsArchived")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<bool>("IsMuted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime>("JoinedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<DateTime?>("LastReadAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<long>("LastReadSequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.Property<DateTime?>("LeftAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex(new[] { "UserId", "ConversationId" }, "IX_ConversationMembers_User_Conversation");
+
+                    b.HasIndex(new[] { "ConversationId", "UserId" }, "UX_ConversationMembers_Conversation_User")
+                        .IsUnique();
+
+                    b.ToTable("ConversationMembers", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ConversationMembers_LastReadSequence", "[LastReadSequence] >= 0");
+
+                            t.HasCheckConstraint("CK_ConversationMembers_LeftAtUtc", "[LeftAtUtc] IS NULL OR [LeftAtUtc] >= [JoinedAtUtc]");
+                        });
+                });
+
             modelBuilder.Entity("WebChat.Api.Models.FriendAuditLog", b =>
                 {
                     b.Property<Guid>("Id")
@@ -166,6 +267,62 @@ namespace WebChat.Api.Migrations
                     b.ToTable("Friendships", null, t =>
                         {
                             t.HasCheckConstraint("CK_Friendships_DifferentUsers", "[UserAId] <> [UserBId]");
+                        });
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.Message", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ClientMessageId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Content")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<DateTime?>("EditedAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<DateTime?>("RecalledAtUtc")
+                        .HasColumnType("datetime2(7)");
+
+                    b.Property<Guid?>("ReplyToMessageId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("SenderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("SequenceNumber")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Type")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex(new[] { "ConversationId", "SequenceNumber" }, "UX_Messages_Conversation_Sequence")
+                        .IsUnique();
+
+                    b.HasIndex(new[] { "SenderId", "ClientMessageId" }, "UX_Messages_Sender_ClientMessage")
+                        .IsUnique();
+
+                    b.ToTable("Messages", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Messages_ClientMessageId", "[ClientMessageId] <> '00000000-0000-0000-0000-000000000000'");
+
+                            t.HasCheckConstraint("CK_Messages_SequenceNumber", "[SequenceNumber] > 0");
+
+                            t.HasCheckConstraint("CK_Messages_TextContent", "(\r\n    [Type] = 1\r\n    AND [Content] IS NOT NULL\r\n    AND LEN(LTRIM(RTRIM([Content]))) > 0\r\n)");
+
+                            t.HasCheckConstraint("CK_Messages_Type", "[Type] = 1");
                         });
                 });
 
@@ -450,6 +607,42 @@ namespace WebChat.Api.Migrations
                     b.ToTable("UserSessions", (string)null);
                 });
 
+            modelBuilder.Entity("WebChat.Api.Models.Conversation", b =>
+                {
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("PrivateUserHighId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("PrivateUserLowId")
+                        .OnDelete(DeleteBehavior.NoAction);
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.ConversationMember", b =>
+                {
+                    b.HasOne("WebChat.Api.Models.Conversation", "Conversation")
+                        .WithMany("Members")
+                        .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Conversation");
+                });
+
             modelBuilder.Entity("WebChat.Api.Models.FriendAuditLog", b =>
                 {
                     b.HasOne("WebChat.Api.Models.User", null)
@@ -493,6 +686,23 @@ namespace WebChat.Api.Migrations
                         .HasForeignKey("UserBId")
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.Message", b =>
+                {
+                    b.HasOne("WebChat.Api.Models.Conversation", "Conversation")
+                        .WithMany("Messages")
+                        .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("WebChat.Api.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("SenderId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Conversation");
                 });
 
             modelBuilder.Entity("WebChat.Api.Models.RefreshToken", b =>
@@ -576,6 +786,13 @@ namespace WebChat.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("WebChat.Api.Models.Conversation", b =>
+                {
+                    b.Navigation("Members");
+
+                    b.Navigation("Messages");
                 });
 
             modelBuilder.Entity("WebChat.Api.Models.Permission", b =>

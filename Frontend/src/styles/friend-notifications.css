@@ -1,0 +1,212 @@
+
+/* =====================================================
+   WEBCHAT 5.7.8C - FRIEND REALTIME NOTIFICATIONS
+   ===================================================== */
+
+.webchat-friend-notices {
+  position: fixed;
+  top: 20px;
+  right: 22px;
+  z-index: 1200;
+
+  width: min(390px, calc(100vw - 32px));
+
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  pointer-events: none;
+}
+
+/* =====================================================
+   NOTICE CARD
+   ===================================================== */
+
+.webchat-friend-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+
+  padding: 16px;
+
+  background: #ffffff;
+  color: #1e293b;
+
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.12),
+    0 2px 8px rgba(15, 23, 42, 0.04);
+
+  pointer-events: auto;
+
+  animation: webchat-friend-notice-enter 180ms ease-out;
+}
+
+.webchat-friend-notice-request {
+  border-left: 4px solid #2563eb;
+}
+
+.webchat-friend-notice-accepted {
+  border-left: 4px solid #16a34a;
+}
+
+/* =====================================================
+   ICON
+   ===================================================== */
+
+.webchat-friend-notice-icon {
+  flex-shrink: 0;
+
+  width: 42px;
+  height: 42px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 13px;
+
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.webchat-friend-notice-accepted
+.webchat-friend-notice-icon {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+/* =====================================================
+   BODY
+   ===================================================== */
+
+.webchat-friend-notice-body {
+  flex: 1;
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.webchat-friend-notice-body strong {
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.webchat-friend-notice-body p {
+  margin: 0;
+
+  font-size: 13px;
+  line-height: 1.5;
+
+  color: #64748b;
+
+  overflow-wrap: anywhere;
+}
+
+/* =====================================================
+   ACTION
+   ===================================================== */
+
+.webchat-friend-notice-action {
+  margin-top: 4px;
+  padding: 0;
+
+  border: 0;
+  background: transparent;
+
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 700;
+
+  cursor: pointer;
+}
+
+.webchat-friend-notice-action:hover {
+  text-decoration: underline;
+}
+
+.webchat-friend-notice-action:focus-visible,
+.webchat-friend-notice-close:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 3px;
+}
+
+/* =====================================================
+   CLOSE BUTTON
+   ===================================================== */
+
+.webchat-friend-notice-close {
+  flex-shrink: 0;
+
+  width: 27px;
+  height: 27px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border: 0;
+  border-radius: 8px;
+
+  background: transparent;
+  color: #64748b;
+
+  cursor: pointer;
+}
+
+.webchat-friend-notice-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+/* =====================================================
+   ANIMATION
+   ===================================================== */
+
+@keyframes webchat-friend-notice-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* =====================================================
+   RESPONSIVE
+   ===================================================== */
+
+@media (max-width: 640px) {
+  .webchat-friend-notices {
+    top: 12px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+  }
+
+  .webchat-friend-notice {
+    padding: 13px;
+    border-radius: 14px;
+  }
+
+  .webchat-friend-notice-icon {
+    width: 37px;
+    height: 37px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .webchat-friend-notice {
+    animation: none;
+  }
+}

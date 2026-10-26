@@ -1,5 +1,13 @@
-import { useEffect, useState } from "react";
+
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
 import { Link } from "react-router-dom";
+
 import {
   ArrowLeft,
   Ban,
@@ -18,31 +26,52 @@ import {
 } from "lucide-react";
 
 import { userApi } from "../api/userApi";
+
 import { getAuthError } from "../../auth/api/authApi";
+
 import {
   friendApi,
   getFriendError,
 } from "../../friends/api/friendApi";
 
+import { useChatRealtime } from
+  "../../realtime/hooks/useChatRealtime";
+
 import "../../../styles/user-search.css";
+
+const REALTIME_REFRESH_DELAY = 150;
+
+// =====================================================
+// HELPERS
+// =====================================================
+
+function normalizeId(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function getUserName(user) {
+  return (
+    user?.displayName ||
+    user?.username ||
+    "Người dùng"
+  );
+}
 
 // =====================================================
 // AVATAR
 // =====================================================
 
 function SearchAvatar({ user }) {
-  const [failedUrl, setFailedUrl] = useState(null);
+  const [failedUrl, setFailedUrl] =
+    useState(null);
 
-  const name = (
-    user.displayName ||
-    user.username ||
-    "U"
-  ).trim();
-
-  const initials = name
+  const initials = getUserName(user)
+    .trim()
     .split(/\s+/)
     .slice(-2)
-    .map((part) => part.charAt(0).toUpperCase())
+    .map((part) =>
+      part.charAt(0).toUpperCase()
+    )
     .join("");
 
   return (
@@ -53,7 +82,9 @@ function SearchAvatar({ user }) {
           src={user.avatarUrl}
           alt=""
           referrerPolicy="no-referrer"
-          onError={() => setFailedUrl(user.avatarUrl)}
+          onError={() =>
+            setFailedUrl(user.avatarUrl)
+          }
         />
       ) : (
         initials || <UserRound size={22} />
@@ -73,10 +104,9 @@ function RelationshipAction({
   onSend,
 }) {
   const status = relationship?.status;
+
   const busy = sendingId !== null;
 
-  // Nếu Backend không cung cấp trạng thái hợp lệ,
-  // không cho gửi lời mời để tránh thao tác sai.
   if (!status) {
     return (
       <span className="user-search-relation neutral">
@@ -147,6 +177,7 @@ function RelationshipAction({
           onClick={() => onSend(user)}
         >
           <UserRoundPlus size={16} />
+
           {sendingId === user.id
             ? "Đang gửi..."
             : "Kết bạn"}
@@ -167,27 +198,84 @@ function RelationshipAction({
 // =====================================================
 
 export default function UserSearchPage() {
-  // Search
-  const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
-
-  // Pagination
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-
-  // API result
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [refreshKey, setRefreshKey] = useState(0);
-
-  // Friend Request
-  const [sendingId, setSendingId] = useState(null);
-  const [actionMessage, setActionMessage] = useState("");
-  const [actionError, setActionError] = useState("");
+  const {
+    subscribe,
+    syncVersion,
+  } = useChatRealtime();
 
   // =====================================================
-  // DEBOUNCE 300 MS
+  // SEARCH
+  // =====================================================
+
+  const [query, setQuery] = useState("");
+
+  const [
+    debouncedQuery,
+    setDebouncedQuery,
+  ] = useState("");
+
+  // =====================================================
+  // PAGINATION
+  // =====================================================
+
+  const [page, setPage] = useState(1);
+
+  const [pageSize, setPageSize] =
+    useState(20);
+
+  // =====================================================
+  // API RESULT
+  // =====================================================
+
+  const [result, setResult] =
+    useState(null);
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState("");
+
+  const [
+    realtimeSyncError,
+    setRealtimeSyncError,
+  ] = useState("");
+
+  const [refreshKey, setRefreshKey] =
+    useState(0);
+
+  // =====================================================
+  // FRIEND REQUEST
+  // =====================================================
+
+  const [sendingId, setSendingId] =
+    useState(null);
+
+  const [
+    actionMessage,
+    setActionMessage,
+  ] = useState("");
+
+  const [
+    actionError,
+    setActionError,
+  ] = useState("");
+
+  // =====================================================
+  // REFS
+  // =====================================================
+
+  const realtimeTimerRef = useRef(null);
+
+  const previousSyncVersionRef =
+    useRef(syncVersion);
+
+  // Chỉ ghi snapshot sau khi REST trả kết quả hợp lệ.
+  // Cho phép giữ danh sách hiện tại khi refresh nền.
+  const latestResultRef = useRef(null);
+
+  // =====================================================
+  // DEBOUNCE SEARCH - 300 MS
   // =====================================================
 
   useEffect(() => {
@@ -201,24 +289,118 @@ export default function UserSearchPage() {
   }, [query]);
 
   // =====================================================
+  // 5.7.8C - DEBOUNCED REALTIME REFRESH
+  // =====================================================
+
+  const scheduleRealtimeRefresh =
+    useCallback(() => {
+      if (realtimeTimerRef.current !== null) {
+        window.clearTimeout(
+          realtimeTimerRef.current
+        );
+      }
+
+      realtimeTimerRef.current =
+        window.setTimeout(() => {
+          realtimeTimerRef.current = null;
+
+          setRefreshKey(
+            (value) => value + 1
+          );
+        }, REALTIME_REFRESH_DELAY);
+    }, []);
+
+  // =====================================================
+  // SIGNALR FRIEND EVENTS
+  // =====================================================
+
+  useEffect(() => {
+    const unsubscribeRequest = subscribe(
+      "FriendRequestChanged",
+      scheduleRealtimeRefresh
+    );
+
+    const unsubscribeFriendship = subscribe(
+      "FriendshipChanged",
+      scheduleRealtimeRefresh
+    );
+
+    return () => {
+      unsubscribeRequest();
+      unsubscribeFriendship();
+
+      if (realtimeTimerRef.current !== null) {
+        window.clearTimeout(
+          realtimeTimerRef.current
+        );
+
+        realtimeTimerRef.current = null;
+      }
+    };
+  }, [
+    subscribe,
+    scheduleRealtimeRefresh,
+  ]);
+
+  // =====================================================
+  // SIGNALR RECONNECT / SYNC REQUIRED
+  // =====================================================
+
+  useEffect(() => {
+    if (
+      previousSyncVersionRef.current ===
+      syncVersion
+    ) {
+      return;
+    }
+
+    previousSyncVersionRef.current =
+      syncVersion;
+
+    scheduleRealtimeRefresh();
+  }, [
+    syncVersion,
+    scheduleRealtimeRefresh,
+  ]);
+
+  // =====================================================
   // LOAD USERS + RELATIONSHIPS
   // =====================================================
 
   useEffect(() => {
-    const controller = new AbortController();
+    const controller =
+      new AbortController();
+
     let active = true;
+
+    const previous =
+      latestResultRef.current;
+
+    const canKeepExistingList =
+      previous !== null &&
+      Array.isArray(previous.items) &&
+      previous.searchQuery === debouncedQuery &&
+      previous.page === page &&
+      previous.pageSize === pageSize;
 
     async function loadUsers() {
       try {
-        // 1. Lấy danh sách người dùng.
-        const data = await userApi.searchUsers({
-          query: debouncedQuery,
-          page,
-          pageSize,
-          signal: controller.signal,
-        });
+        // =============================================
+        // 1. USER DISCOVERY
+        // =============================================
 
-        if (!active || controller.signal.aborted) {
+        const data =
+          await userApi.searchUsers({
+            query: debouncedQuery,
+            page,
+            pageSize,
+            signal: controller.signal,
+          });
+
+        if (
+          !active ||
+          controller.signal.aborted
+        ) {
           return;
         }
 
@@ -232,9 +414,13 @@ export default function UserSearchPage() {
           );
         }
 
-        // 2. Lấy trạng thái quan hệ đúng theo
-        // danh sách user vừa truy vấn.
-        const ids = data.items.map((user) => user.id);
+        // =============================================
+        // 2. BATCH FRIENDSHIP STATUS
+        // =============================================
+
+        const ids = data.items.map(
+          (item) => item.id
+        );
 
         let statusItems = [];
 
@@ -247,88 +433,132 @@ export default function UserSearchPage() {
 
           if (
             !statusResponse ||
-            !Array.isArray(statusResponse.items)
+            !Array.isArray(
+              statusResponse.items
+            )
           ) {
             throw new Error(
               "Dữ liệu quan hệ bạn bè không hợp lệ."
             );
           }
 
-          statusItems = statusResponse.items;
+          statusItems =
+            statusResponse.items;
         }
 
-        if (!active || controller.signal.aborted) {
+        if (
+          !active ||
+          controller.signal.aborted
+        ) {
           return;
         }
 
-        const statuses = Object.fromEntries(
-          statusItems.map((item) => [
-            item.userId,
-            {
-              status: item.status,
-              requestId: item.requestId,
-            },
-          ])
-        );
+        const statuses =
+          Object.fromEntries(
+            statusItems.map((item) => [
+              normalizeId(item.userId),
+              {
+                status: item.status,
+                requestId: item.requestId,
+              },
+            ])
+          );
 
-        setResult({
+        const nextResult = {
           ...data,
           searchQuery: debouncedQuery,
           statuses,
-        });
+        };
+
+        // =============================================
+        // 3. UPDATE VALID RESULT
+        // =============================================
+
+        latestResultRef.current =
+          nextResult;
+
+        setResult(nextResult);
 
         setError("");
+        setRealtimeSyncError("");
       } catch (err) {
-        if (!active || controller.signal.aborted) {
+        if (
+          !active ||
+          controller.signal.aborted
+        ) {
           return;
         }
 
-        setResult(null);
-
-        if (
-          err.message ===
+        const message =
+          err?.message ===
             "Dữ liệu người dùng từ Backend không hợp lệ." ||
-          err.message ===
+          err?.message ===
             "Dữ liệu quan hệ bạn bè không hợp lệ."
-        ) {
-          setError(err.message);
+            ? err.message
+            : getAuthError(err);
+
+        // Refresh nền bị lỗi:
+        // Giữ nguyên dữ liệu cũ để không nhấp nháy.
+        if (canKeepExistingList) {
+          setRealtimeSyncError(
+            "Chưa thể cập nhật trạng thái kết bạn. " +
+            "Bạn có thể thử làm mới."
+          );
         } else {
-          setError(getAuthError(err));
+          setResult(null);
+          setError(message);
         }
       } finally {
-        if (active && !controller.signal.aborted) {
+        if (
+          active &&
+          !controller.signal.aborted
+        ) {
           setLoading(false);
         }
       }
     }
 
     Promise.resolve().then(() => {
-      if (!active || controller.signal.aborted) {
+      if (
+        !active ||
+        controller.signal.aborted
+      ) {
         return;
       }
 
-      setLoading(true);
-      setError("");
-      setResult(null);
+      if (!canKeepExistingList) {
+        setLoading(true);
+        setResult(null);
+      }
 
-      loadUsers();
+      setError("");
+
+      void loadUsers();
     });
 
     return () => {
       active = false;
       controller.abort();
     };
-  }, [debouncedQuery, page, pageSize, refreshKey]);
+  }, [
+    debouncedQuery,
+    page,
+    pageSize,
+    refreshKey,
+  ]);
 
   // =====================================================
-  // EVENTS
+  // EVENTS - SEARCH
   // =====================================================
 
   function handleQueryChange(event) {
     setQuery(event.target.value);
     setPage(1);
     setResult(null);
+
     setError("");
+    setRealtimeSyncError("");
+
     setActionMessage("");
     setActionError("");
   }
@@ -337,20 +567,34 @@ export default function UserSearchPage() {
     setQuery("");
     setPage(1);
     setResult(null);
+
     setError("");
+    setRealtimeSyncError("");
   }
 
   function handlePageSizeChange(event) {
-    setPageSize(Number(event.target.value));
+    setPageSize(
+      Number(event.target.value)
+    );
+
     setPage(1);
     setResult(null);
+
     setError("");
+    setRealtimeSyncError("");
   }
 
+  // =====================================================
+  // MANUAL REFRESH
+  // =====================================================
+
   function refreshUsers() {
-    setResult(null);
     setError("");
-    setRefreshKey((value) => value + 1);
+    setRealtimeSyncError("");
+
+    setRefreshKey(
+      (value) => value + 1
+    );
   }
 
   // =====================================================
@@ -358,15 +602,23 @@ export default function UserSearchPage() {
   // =====================================================
 
   async function sendFriendRequest(user) {
-    if (sendingId !== null) return;
+    if (sendingId !== null) {
+      return;
+    }
 
-    // Kiểm tra thêm ở Frontend.
-    // Backend vẫn là nơi thực thi quyền cuối cùng.
-    if (result?.statuses?.[user.id]?.status !== "None") {
+    // Kiểm tra trạng thái tại Frontend.
+    // Backend vẫn là nguồn xác thực cuối cùng.
+    const userId = normalizeId(user.id);
+
+    if (
+      result?.statuses?.[userId]?.status !==
+      "None"
+    ) {
       return;
     }
 
     setSendingId(user.id);
+
     setActionMessage("");
     setActionError("");
 
@@ -374,19 +626,17 @@ export default function UserSearchPage() {
       await friendApi.sendRequest(user.id);
 
       setActionMessage(
-        `Đã gửi lời mời kết bạn đến ${
-          user.displayName || user.username
-        }.`
+        `Đã gửi lời mời kết bạn đến ${getUserName(user)}.`
       );
 
-      // Không dùng sentIds tạm.
-      // Tải lại trạng thái thật từ SQL.
+      // Tải trạng thái thực từ Backend.
       refreshUsers();
     } catch (err) {
-      setActionError(getFriendError(err));
+      setActionError(
+        getFriendError(err)
+      );
 
-      // Quan hệ có thể vừa thay đổi trên thiết bị khác.
-      // Đọc lại trạng thái để UI được đồng bộ.
+      // Quan hệ có thể thay đổi ở thiết bị khác.
       refreshUsers();
     } finally {
       setSendingId(null);
@@ -394,12 +644,16 @@ export default function UserSearchPage() {
   }
 
   // =====================================================
-  // DISPLAY
+  // DISPLAY STATE
   // =====================================================
 
   const keyword = query.trim();
-  const isTyping = keyword !== debouncedQuery;
-  const isSearching = keyword.length > 0;
+
+  const isTyping =
+    keyword !== debouncedQuery;
+
+  const isSearching =
+    keyword.length > 0;
 
   const ready =
     !isTyping &&
@@ -411,7 +665,8 @@ export default function UserSearchPage() {
     result.page === page &&
     result.pageSize === pageSize;
 
-  const items = ready ? result.items : [];
+  const items =
+    ready ? result.items : [];
 
   const showLoading =
     isTyping ||
@@ -425,6 +680,11 @@ export default function UserSearchPage() {
   return (
     <main className="user-search-page">
       <div className="user-search-container">
+
+        {/* =========================================
+            TOPBAR
+            ========================================= */}
+
         <header className="user-search-topbar">
           <Link
             to="/messenger"
@@ -440,13 +700,20 @@ export default function UserSearchPage() {
           </span>
         </header>
 
+        {/* =========================================
+            HEADING
+            ========================================= */}
+
         <section className="user-search-heading">
           <div className="user-search-heading-icon">
             <Users size={25} />
           </div>
 
           <div>
-            <h1>Khám phá bạn bè</h1>
+            <h1>
+              Khám phá bạn bè
+            </h1>
+
             <p>
               Khám phá và kết nối với mọi người
               trên WebChat.
@@ -462,7 +729,14 @@ export default function UserSearchPage() {
           </Link>
         </section>
 
+        {/* =========================================
+            MAIN CARD
+            ========================================= */}
+
         <section className="user-search-card">
+
+          {/* SEARCH CONTROLS */}
+
           <div className="user-search-controls">
             <div className="user-search-field">
               <Search size={21} />
@@ -498,11 +772,20 @@ export default function UserSearchPage() {
                 onChange={handlePageSizeChange}
                 aria-label="Số người trên một trang"
               >
-                <option value={20}>20</option>
-                <option value={50}>50</option>
+                <option value={20}>
+                  20
+                </option>
+
+                <option value={50}>
+                  50
+                </option>
               </select>
             </label>
           </div>
+
+          {/* =========================================
+              ACTION SUCCESS
+              ========================================= */}
 
           {actionMessage && (
             <div
@@ -514,6 +797,10 @@ export default function UserSearchPage() {
             </div>
           )}
 
+          {/* =========================================
+              ACTION ERROR
+              ========================================= */}
+
           {actionError && (
             <div
               className="user-search-action-alert error"
@@ -523,6 +810,36 @@ export default function UserSearchPage() {
             </div>
           )}
 
+          {/* =========================================
+              BACKGROUND SYNC WARNING
+              ========================================= */}
+
+          {realtimeSyncError && (
+            <div
+              className="user-search-action-alert error"
+              role="status"
+            >
+              <span>
+                {realtimeSyncError}
+              </span>
+
+              <button
+                type="button"
+                onClick={refreshUsers}
+                style={{
+                  marginLeft: "auto",
+                  cursor: "pointer",
+                }}
+              >
+                Thử lại
+              </button>
+            </div>
+          )}
+
+          {/* =========================================
+              RESULT HEADER
+              ========================================= */}
+
           <div className="user-search-result-header">
             <h2>
               {isSearching
@@ -531,9 +848,15 @@ export default function UserSearchPage() {
             </h2>
 
             {ready && (
-              <span>{result.total} người dùng</span>
+              <span>
+                {result.total} người dùng
+              </span>
             )}
           </div>
+
+          {/* =========================================
+              LOADING
+              ========================================= */}
 
           {showLoading ? (
             <div
@@ -541,6 +864,7 @@ export default function UserSearchPage() {
               role="status"
             >
               <div className="loading-spinner" />
+
               <p>
                 {isSearching
                   ? "Đang tìm kiếm và kiểm tra kết bạn..."
@@ -553,7 +877,11 @@ export default function UserSearchPage() {
               role="alert"
             >
               <SearchX size={35} />
-              <h3>Không thể tải dữ liệu</h3>
+
+              <h3>
+                Không thể tải dữ liệu
+              </h3>
+
               <p>{error}</p>
 
               <button
@@ -563,7 +891,8 @@ export default function UserSearchPage() {
                 Thử lại
               </button>
             </div>
-          ) : ready && items.length === 0 ? (
+          ) : ready &&
+            items.length === 0 ? (
             <div className="user-search-empty">
               <SearchX size={35} />
 
@@ -599,7 +928,7 @@ export default function UserSearchPage() {
 
                   <div className="user-search-item-info">
                     <h3>
-                      {user.displayName || user.username}
+                      {getUserName(user)}
                     </h3>
 
                     <p className="user-search-username">
@@ -615,7 +944,11 @@ export default function UserSearchPage() {
 
                   <RelationshipAction
                     user={user}
-                    relationship={result.statuses[user.id]}
+                    relationship={
+                      result.statuses[
+                        normalizeId(user.id)
+                      ]
+                    }
                     sendingId={sendingId}
                     onSend={sendFriendRequest}
                   />
@@ -624,43 +957,55 @@ export default function UserSearchPage() {
             </div>
           )}
 
-          {ready && result.totalPages > 1 && (
-            <div className="user-search-pagination">
-              <button
-                type="button"
-                disabled={
-                  !result.hasPreviousPage ||
-                  sendingId !== null
-                }
-                onClick={() => {
-                  setResult(null);
-                  setPage((value) => value - 1);
-                }}
-              >
-                <ChevronLeft size={17} />
-                Trước
-              </button>
+          {/* =========================================
+              PAGINATION
+              ========================================= */}
 
-              <span>
-                Trang {result.page} / {result.totalPages}
-              </span>
+          {ready &&
+            result.totalPages > 1 && (
+              <div className="user-search-pagination">
+                <button
+                  type="button"
+                  disabled={
+                    !result.hasPreviousPage ||
+                    sendingId !== null
+                  }
+                  onClick={() => {
+                    setResult(null);
 
-              <button
-                type="button"
-                disabled={
-                  !result.hasNextPage ||
-                  sendingId !== null
-                }
-                onClick={() => {
-                  setResult(null);
-                  setPage((value) => value + 1);
-                }}
-              >
-                Sau
-                <ChevronRight size={17} />
-              </button>
-            </div>
-          )}
+                    setPage(
+                      (value) => value - 1
+                    );
+                  }}
+                >
+                  <ChevronLeft size={17} />
+                  Trước
+                </button>
+
+                <span>
+                  Trang {result.page} /{" "}
+                  {result.totalPages}
+                </span>
+
+                <button
+                  type="button"
+                  disabled={
+                    !result.hasNextPage ||
+                    sendingId !== null
+                  }
+                  onClick={() => {
+                    setResult(null);
+
+                    setPage(
+                      (value) => value + 1
+                    );
+                  }}
+                >
+                  Sau
+                  <ChevronRight size={17} />
+                </button>
+              </div>
+            )}
         </section>
       </div>
     </main>

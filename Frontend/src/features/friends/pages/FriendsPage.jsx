@@ -1,5 +1,18 @@
-import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import {
+  Link,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
+
 import {
   ArrowLeft,
   Ban,
@@ -8,6 +21,7 @@ import {
   ChevronRight,
   Clock3,
   Mail,
+  MessageCircle,
   RefreshCw,
   Search,
   ShieldOff,
@@ -21,6 +35,17 @@ import {
   friendApi,
   getFriendError,
 } from "../api/friendApi";
+
+import {
+  openPrivateConversation,
+  getConversationApiError,
+} from "../../conversations/api/conversationApi";
+
+import { useFriendPresence } from
+  "../../realtime/hooks/useFriendPresence";
+
+import { useChatRealtime } from
+  "../../realtime/hooks/useChatRealtime";
 
 import "../../../styles/friends.css";
 import "../../../styles/friends-enhanced.css";
@@ -91,6 +116,9 @@ const EMPTY_MESSAGES = {
   },
 };
 
+// Gộp những sự kiện đến gần nhau.
+const REALTIME_REFRESH_DELAY = 150;
+
 // =====================================================
 // HELPERS
 // =====================================================
@@ -108,38 +136,107 @@ function getInitials(user) {
     .trim()
     .split(/\s+/)
     .slice(-2)
-    .map((part) => part.charAt(0).toUpperCase())
+    .map((part) =>
+      part.charAt(0).toUpperCase()
+    )
     .join("");
+}
+
+async function fetchTabData(
+  tab,
+  page,
+  pageSize,
+  signal
+) {
+  switch (tab) {
+    case "friends":
+      return friendApi.getFriends(
+        page,
+        pageSize,
+        signal
+      );
+
+    case "received":
+      return friendApi.getReceived(
+        page,
+        pageSize,
+        signal
+      );
+
+    case "sent":
+      return friendApi.getSent(
+        page,
+        pageSize,
+        signal
+      );
+
+    case "blocked":
+      return friendApi.getBlocked(
+        page,
+        pageSize,
+        signal
+      );
+
+    default:
+      throw new Error("Tab không hợp lệ.");
+  }
 }
 
 // =====================================================
 // AVATAR
 // =====================================================
 
-function Avatar({ user }) {
-  const [failedUrl, setFailedUrl] = useState(null);
+function Avatar({ user, isOnline = null }) {
+  const [failedUrl, setFailedUrl] =
+    useState(null);
 
   const imageUrl = user?.avatarUrl;
-  const initials = getInitials(user);
 
   return (
-    <div className="friends-avatar">
-      {imageUrl && failedUrl !== imageUrl ? (
-        <img
-          src={imageUrl}
-          alt=""
-          referrerPolicy="no-referrer"
-          onError={() => setFailedUrl(imageUrl)}
+    <div
+      style={{
+        position: "relative",
+        flexShrink: 0,
+      }}
+    >
+      <div className="friends-avatar">
+        {imageUrl && failedUrl !== imageUrl ? (
+          <img
+            src={imageUrl}
+            alt=""
+            referrerPolicy="no-referrer"
+            onError={() =>
+              setFailedUrl(imageUrl)
+            }
+          />
+        ) : (
+          <span>{getInitials(user)}</span>
+        )}
+      </div>
+
+      {isOnline === true && (
+        <span
+          aria-label="Đang hoạt động"
+          title="Đang hoạt động"
+          style={{
+            position: "absolute",
+            right: 0,
+            bottom: 0,
+            width: 12,
+            height: 12,
+            borderRadius: "50%",
+            backgroundColor: "#22c55e",
+            border: "2px solid #fff",
+            boxSizing: "content-box",
+          }}
         />
-      ) : (
-        <span>{initials}</span>
       )}
     </div>
   );
 }
 
 // =====================================================
-// USER CARD
+// FRIEND CARD
 // =====================================================
 
 function FriendCard({
@@ -147,6 +244,8 @@ function FriendCard({
   tab,
   busy,
   onAction,
+  onMessage,
+  isOnline = null,
 }) {
   const user =
     tab === "received"
@@ -155,25 +254,27 @@ function FriendCard({
         ? item.receiver
         : item;
 
-  if (!user) {
-    return null;
-  }
+  if (!user) return null;
 
   const name = getDisplayName(user);
-
-  // FriendRequests sử dụng item.id làm RequestId.
-  // Friendships/Blocks sử dụng user.userId.
   const requestId = item.id;
   const userId = user.userId;
 
   return (
     <article className="friends-user-card friends-enhanced-card">
-      <Avatar user={user} />
+      <Avatar
+        user={user}
+        isOnline={
+          tab === "friends" ? isOnline : null
+        }
+      />
 
       <div className="friends-user-info">
         <h3>{name}</h3>
 
-        <p>@{user.username || "unknown"}</p>
+        <p>
+          @{user.username || "unknown"}
+        </p>
 
         {tab === "friends" && (
           <>
@@ -181,6 +282,37 @@ function FriendCard({
               <Check size={13} />
               Bạn bè
             </span>
+
+            {typeof isOnline === "boolean" && (
+              <span
+                role="status"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginLeft: 8,
+                  fontSize: 12,
+                  color: isOnline
+                    ? "#16a34a"
+                    : "#94a3b8",
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    backgroundColor: isOnline
+                      ? "#22c55e"
+                      : "#94a3b8",
+                  }}
+                />
+                {isOnline
+                  ? "Đang hoạt động"
+                  : "Ngoại tuyến"}
+              </span>
+            )}
 
             {user.bio && (
               <span className="friends-user-bio">
@@ -259,6 +391,16 @@ function FriendCard({
           <>
             <button
               type="button"
+              className="friends-action primary"
+              disabled={busy || !userId}
+              onClick={() => onMessage(userId)}
+            >
+              <MessageCircle size={16} />
+              Nhắn tin
+            </button>
+
+            <button
+              type="button"
               className="friends-action neutral"
               disabled={busy || !userId}
               onClick={() =>
@@ -318,7 +460,10 @@ function ConfirmModal({
       }
     }
 
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener(
+      "keydown",
+      handleKeyDown
+    );
 
     return () => {
       window.removeEventListener(
@@ -442,8 +587,12 @@ function ConfirmModal({
 // =====================================================
 
 export default function FriendsPage() {
-  const [searchParams, setSearchParams] =
-    useSearchParams();
+  const navigate = useNavigate();
+
+  const [
+    searchParams,
+    setSearchParams,
+  ] = useSearchParams();
 
   const requestedTab = searchParams.get("tab");
 
@@ -451,29 +600,97 @@ export default function FriendsPage() {
     ? requestedTab
     : "friends";
 
-  // Pagination
+  const {
+    subscribe,
+    syncVersion,
+  } = useChatRealtime();
+
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  // API
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
+
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Pending badge
   const [receivedCount, setReceivedCount] =
     useState(null);
 
-  // Actions
   const [busy, setBusy] = useState(false);
+
   const [confirmAction, setConfirmAction] =
     useState(null);
 
-  const [success, setSuccess] = useState("");
+  const refreshTimerRef = useRef(null);
+  const previousSyncVersionRef = useRef(null);
 
   // =====================================================
-  // LOAD TAB + PENDING COUNT
+  // 5.7.8B - REALTIME REFRESH
+  // =====================================================
+
+  const queueRealtimeRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) {
+      clearTimeout(refreshTimerRef.current);
+    }
+
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+
+      // Không xóa result ở đây.
+      // Giữ dữ liệu cũ cho tới khi REST trả về.
+      setRefreshKey((value) => value + 1);
+    }, REALTIME_REFRESH_DELAY);
+  }, []);
+
+  useEffect(() => {
+    // Cả hai sự kiện chỉ mang thông tin thay đổi.
+    // Dữ liệu hiển thị vẫn lấy lại từ REST API.
+    const stopRequest = subscribe(
+      "FriendRequestChanged",
+      queueRealtimeRefresh
+    );
+
+    const stopFriendship = subscribe(
+      "FriendshipChanged",
+      queueRealtimeRefresh
+    );
+
+    return () => {
+      stopRequest();
+      stopFriendship();
+
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [subscribe, queueRealtimeRefresh]);
+
+  // Đồng bộ lại sau Reconnect hoặc SyncRequired.
+  useEffect(() => {
+    if (previousSyncVersionRef.current === null) {
+      previousSyncVersionRef.current = syncVersion;
+      return;
+    }
+
+    if (
+      previousSyncVersionRef.current !== syncVersion
+    ) {
+      previousSyncVersionRef.current = syncVersion;
+
+      // Dùng microtask để tránh cập nhật state
+      // đồng bộ ngay trong effect.
+      Promise.resolve().then(() => {
+        queueRealtimeRefresh();
+      });
+    }
+  }, [syncVersion, queueRealtimeRefresh]);
+
+  // =====================================================
+  // LOAD CURRENT TAB + RECEIVED COUNT
   // =====================================================
 
   useEffect(() => {
@@ -481,36 +698,27 @@ export default function FriendsPage() {
     let active = true;
 
     async function load() {
+      // Tải danh sách và badge song song.
+      const countPromise =
+        tab === "received"
+          ? null
+          : friendApi
+              .getReceived(1, 1, controller.signal)
+              .then((data) => data?.total ?? null)
+              .catch(() => null);
+
       try {
-        let data;
+        const data = await fetchTabData(
+          tab,
+          page,
+          pageSize,
+          controller.signal
+        );
 
-        if (tab === "friends") {
-          data = await friendApi.getFriends(
-            page,
-            pageSize,
-            controller.signal
-          );
-        } else if (tab === "received") {
-          data = await friendApi.getReceived(
-            page,
-            pageSize,
-            controller.signal
-          );
-        } else if (tab === "sent") {
-          data = await friendApi.getSent(
-            page,
-            pageSize,
-            controller.signal
-          );
-        } else {
-          data = await friendApi.getBlocked(
-            page,
-            pageSize,
-            controller.signal
-          );
-        }
-
-        if (!active || controller.signal.aborted) {
+        if (
+          !active ||
+          controller.signal.aborted
+        ) {
           return;
         }
 
@@ -524,14 +732,15 @@ export default function FriendsPage() {
           );
         }
 
-        // Nếu xóa bản ghi cuối trang, trở về trang trước.
-        if (page > 1 && data.items.length === 0) {
-          setPage((value) => value - 1);
+        // Nếu sau khi hủy bạn/chặn mà trang
+        // hiện tại không còn kết quả, quay lại
+        // trang gần nhất có dữ liệu.
+        if (
+          page > 1 &&
+          data.items.length === 0
+        ) {
+          setPage((value) => Math.max(1, value - 1));
           return;
-        }
-
-        if (tab === "received") {
-          setReceivedCount(data.total);
         }
 
         setResult({
@@ -539,75 +748,59 @@ export default function FriendsPage() {
           currentTab: tab,
         });
 
+        if (tab === "received") {
+          setReceivedCount(data.total);
+        }
+
         setError("");
       } catch (err) {
-        if (!active || controller.signal.aborted) {
+        if (
+          !active ||
+          controller.signal.aborted
+        ) {
           return;
         }
 
-        setResult(null);
-
-        if (
-          err.message ===
+        const message =
+          err?.message ===
           "Dữ liệu danh sách bạn bè không hợp lệ."
-        ) {
-          setError(err.message);
-        } else {
-          setError(getFriendError(err));
-        }
+            ? err.message
+            : getFriendError(err);
+
+        setError(message);
+
+        // Giữ dữ liệu cũ nếu request đồng bộ ngầm lỗi.
+        // Người dùng có thể nhấn "Thử lại".
       } finally {
         if (active && !controller.signal.aborted) {
           setLoading(false);
         }
       }
 
-      // Khi đang ở tab khác, truy vấn thêm tổng số
-      // lời mời chờ. Không tải toàn bộ danh sách.
-      if (
-        tab !== "received" &&
-        active &&
-        !controller.signal.aborted
-      ) {
-        try {
-          const received = await friendApi.getReceived(
-            1,
-            20,
-            controller.signal
-          );
+      if (countPromise) {
+        const count = await countPromise;
 
-          if (active && !controller.signal.aborted) {
-            setReceivedCount(
-              typeof received?.total === "number"
-                ? received.total
-                : null
-            );
-          }
-        } catch {
-          if (active && !controller.signal.aborted) {
-            setReceivedCount(null);
-          }
+        if (active && !controller.signal.aborted) {
+          setReceivedCount(count);
         }
       }
     }
 
-    Promise.resolve().then(() => {
-      if (!active) return;
-
-      setLoading(true);
-      setError("");
-      setResult(null);
-
-      load();
-    });
+    void load();
 
     return () => {
       active = false;
       controller.abort();
     };
-  }, [tab, page, pageSize, refreshKey]);
+  }, [
+    tab,
+    page,
+    pageSize,
+    refreshKey,
+  ]);
 
   // =====================================================
-  // EVENTS
+  // NAVIGATION & MANUAL REFRESH
   // =====================================================
 
   function changeTab(nextTab) {
@@ -621,6 +814,7 @@ export default function FriendsPage() {
 
     setPage(1);
     setResult(null);
+    setLoading(true);
     setError("");
     setSuccess("");
   }
@@ -629,9 +823,58 @@ export default function FriendsPage() {
     if (busy) return;
 
     setResult(null);
+    setLoading(true);
     setError("");
+
     setRefreshKey((value) => value + 1);
   }
+
+  function changePage(nextPage) {
+    if (busy || nextPage < 1) return;
+
+    setResult(null);
+    setLoading(true);
+    setError("");
+    setPage(nextPage);
+  }
+
+  // =====================================================
+  // OPEN PRIVATE CONVERSATION
+  // =====================================================
+
+  async function handleMessage(userId) {
+    if (busy || !userId) return;
+
+    setBusy(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const conversation =
+        await openPrivateConversation(userId);
+
+      if (!conversation?.id) {
+        throw new Error(
+          "API không trả về ConversationId hợp lệ."
+        );
+      }
+
+      navigate(`/messenger/${conversation.id}`);
+    } catch (err) {
+      setError(
+        getConversationApiError(
+          err,
+          "Không thể mở cuộc trò chuyện."
+        )
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // =====================================================
+  // FRIEND ACTIONS
+  // =====================================================
 
   function requestAction(type, id, name) {
     if (busy || !id) return;
@@ -647,10 +890,6 @@ export default function FriendsPage() {
     if (busy) return;
     setConfirmAction(null);
   }
-
-  // =====================================================
-  // EXECUTE ACTION
-  // =====================================================
 
   async function executeAction() {
     if (!confirmAction || busy) return;
@@ -688,44 +927,64 @@ export default function FriendsPage() {
           break;
 
         default:
-          return;
+          throw new Error("Thao tác không hợp lệ.");
       }
 
       setSuccess(
         `${ACTION_LABELS[action.type]} thành công.`
       );
 
-      setConfirmAction(null);
+      // Bản cũ gọi refresh() trong khi busy=true,
+      // nên refresh bị bỏ qua. Ở đây cập nhật
+      // refreshKey trực tiếp sau khi REST thành công.
       setPage(1);
-      refresh();
+
+      setRefreshKey((value) => value + 1);
     } catch (err) {
       setError(getFriendError(err));
 
-      setConfirmAction(null);
-      setPage(1);
-      refresh();
+      // Đồng bộ lại nếu quan hệ đã bị thay đổi
+      // từ phía tài khoản khác.
+      queueRealtimeRefresh();
     } finally {
+      setConfirmAction(null);
       setBusy(false);
     }
   }
 
   // =====================================================
-  // RENDER STATE
+  // VIEW STATE
   // =====================================================
 
   const ready =
-    !loading &&
-    !error &&
     result !== null &&
     result.currentTab === tab &&
     result.page === page &&
     result.pageSize === pageSize &&
     Array.isArray(result.items);
 
-  const empty = EMPTY_MESSAGES[tab];
-
   const showLoading =
     loading || (!error && !ready);
+
+  const empty = EMPTY_MESSAGES[tab];
+
+  // Presence chỉ theo dõi bạn bè của trang hiện tại.
+  const pageFriendIds = useMemo(() => {
+    if (tab !== "friends" || !ready) {
+      return [];
+    }
+
+    return result.items
+      .map((item) => item.userId)
+      .filter(Boolean);
+  }, [tab, ready, result]);
+
+  const { getPresence } =
+    useFriendPresence(pageFriendIds);
+
+  // =====================================================
+  // RENDER
+  // =====================================================
 
   return (
     <main className="friends-page friends-enhanced-page">
@@ -747,7 +1006,7 @@ export default function FriendsPage() {
           </span>
         </header>
 
-        {/* PAGE HEADING */}
+        {/* HEADING */}
         <div className="friends-heading">
           <div className="friends-heading-icon">
             <UsersRound size={25} />
@@ -755,7 +1014,6 @@ export default function FriendsPage() {
 
           <div className="friends-heading-text">
             <h1>Quản lý bạn bè</h1>
-
             <p>
               Quản lý kết nối, lời mời kết bạn
               và quyền riêng tư của bạn.
@@ -771,7 +1029,7 @@ export default function FriendsPage() {
           </Link>
         </div>
 
-        {/* INFORMATION STRIP */}
+        {/* RECEIVED COUNT */}
         <div className="friends-overview">
           <div className="friends-overview-text">
             <strong>
@@ -787,7 +1045,7 @@ export default function FriendsPage() {
                 ? "Xem tab Đã nhận để kiểm tra lời mời."
                 : receivedCount > 0
                   ? "Bạn có lời mời kết bạn cần phản hồi."
-                  : "Các lời mời mới sẽ xuất hiện trong tab Đã nhận khi bạn cập nhật trang."}
+                  : "Các lời mời mới sẽ xuất hiện tự động khi bạn đang kết nối."}
             </p>
           </div>
 
@@ -797,9 +1055,7 @@ export default function FriendsPage() {
                 <button
                   type="button"
                   className="friends-overview-link"
-                  onClick={() =>
-                    changeTab("received")
-                  }
+                  onClick={() => changeTab("received")}
                 >
                   Xem lời mời
                 </button>
@@ -841,12 +1097,9 @@ export default function FriendsPage() {
                     selected ? "active" : ""
                   }`}
                   disabled={busy}
-                  onClick={() =>
-                    changeTab(item.id)
-                  }
+                  onClick={() => changeTab(item.id)}
                 >
                   <Icon size={17} />
-
                   <span>{item.label}</span>
 
                   {item.id === "received" &&
@@ -890,9 +1143,10 @@ export default function FriendsPage() {
                   setPageSize(
                     Number(event.target.value)
                   );
-
                   setPage(1);
                   setResult(null);
+                  setLoading(true);
+                  setError("");
                 }}
                 aria-label="Số kết quả trên một trang"
               >
@@ -940,7 +1194,7 @@ export default function FriendsPage() {
             </div>
           )}
 
-          {/* LOADING */}
+          {/* CONTENT */}
           {showLoading ? (
             <div
               className="friends-empty"
@@ -952,13 +1206,12 @@ export default function FriendsPage() {
           ) : error ? (
             <div className="friends-empty">
               <p>
-                Không thể tải danh sách.
+                Không thể cập nhật danh sách.
                 Hãy nhấn Thử lại.
               </p>
             </div>
-          ) : ready && result.items.length === 0 ? (
-
-            /* EMPTY */
+          ) : ready &&
+            result.items.length === 0 ? (
             <div className="friends-empty friends-enhanced-empty">
               {tab === "received" ? (
                 <Mail size={38} />
@@ -992,24 +1245,27 @@ export default function FriendsPage() {
               )}
             </div>
           ) : ready ? (
-
-            /* LIST + PAGINATION */
             <>
+              {/* LIST */}
               <div className="friends-list">
                 {result.items.map((item) => (
                   <FriendCard
-                    key={
-                      item.id ||
-                      item.userId
-                    }
+                    key={item.id || item.userId}
                     item={item}
                     tab={tab}
                     busy={busy}
                     onAction={requestAction}
+                    onMessage={handleMessage}
+                    isOnline={
+                      tab === "friends"
+                        ? getPresence(item.userId)
+                        : null
+                    }
                   />
                 ))}
               </div>
 
+              {/* PAGINATION */}
               <div className="friends-list-footer friends-enhanced-footer">
                 <span>
                   Tổng cộng: {result.total}
@@ -1024,12 +1280,9 @@ export default function FriendsPage() {
                         busy
                       }
                       aria-label="Trang trước"
-                      onClick={() => {
-                        setResult(null);
-                        setPage(
-                          (value) => value - 1
-                        );
-                      }}
+                      onClick={() =>
+                        changePage(page - 1)
+                      }
                     >
                       <ChevronLeft size={18} />
                     </button>
@@ -1045,12 +1298,9 @@ export default function FriendsPage() {
                         busy
                       }
                       aria-label="Trang sau"
-                      onClick={() => {
-                        setResult(null);
-                        setPage(
-                          (value) => value + 1
-                        );
-                      }}
+                      onClick={() =>
+                        changePage(page + 1)
+                      }
                     >
                       <ChevronRight size={18} />
                     </button>
@@ -1062,7 +1312,7 @@ export default function FriendsPage() {
         </section>
       </div>
 
-      {/* CONFIRMATION */}
+      {/* CONFIRM MODAL */}
       {confirmAction && (
         <ConfirmModal
           action={confirmAction}

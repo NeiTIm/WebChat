@@ -1,15 +1,23 @@
+
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+
 using WebChat.Api.Data;
 using WebChat.Api.Data.Seed;
+using WebChat.Api.Hubs;
 using WebChat.Api.Models;
 using WebChat.Api.Options;
+using WebChat.Api.Realtime;
 using WebChat.Api.Services.Auth;
-using WebChat.Api.Services.Users;
+using WebChat.Api.Services.Conversations;
 using WebChat.Api.Services.Friends;
+using WebChat.Api.Services.Messages;
+using WebChat.Api.Services.Users;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // =====================================================
@@ -18,6 +26,23 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
+
+// =====================================================
+// SIGNALR - PHASE 5.7.2
+// =====================================================
+
+builder.Services.AddSignalR();
+
+builder.Services.AddScoped<
+    IChatRealtimePublisher,
+    ChatRealtimePublisher>();
+
+// SignalR dùng ClaimTypes.NameIdentifier làm UserId.
+// Guid được chuẩn hóa theo định dạng "D" để đồng nhất
+// với UserId sử dụng trong Realtime Publisher.
+builder.Services.AddSingleton<
+    IUserIdProvider,
+    ChatUserIdProvider>();
 
 // =====================================================
 // SQL SERVER
@@ -38,7 +63,8 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // =====================================================
 
 builder.Services.Configure<JwtOptions>(
-    builder.Configuration.GetSection(JwtOptions.SectionName));
+    builder.Configuration.GetSection(
+        JwtOptions.SectionName));
 
 var jwtOptions = builder.Configuration
     .GetSection(JwtOptions.SectionName)
@@ -56,7 +82,8 @@ if (string.IsNullOrWhiteSpace(jwtOptions.Issuer) ||
 if (jwtOptions.AccessTokenMinutes is < 1 or > 60)
 {
     throw new InvalidOperationException(
-        "Jwt:AccessTokenMinutes phải nằm trong khoảng 1-60.");
+        "Jwt:AccessTokenMinutes phải nằm " +
+        "trong khoảng 1-60.");
 }
 
 byte[] jwtKeyBytes;
@@ -86,7 +113,8 @@ var signingKey = new SymmetricSecurityKey(
 // =====================================================
 
 builder.Services
-    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddAuthentication(
+        JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.MapInboundClaims = false;
@@ -107,55 +135,97 @@ builder.Services
                 RequireExpirationTime = true,
                 RequireSignedTokens = true,
 
-                ValidAlgorithms = new[]
-                {
+                ValidAlgorithms =
+                [
                     SecurityAlgorithms.HmacSha256
-                },
+                ],
 
-                ClockSkew = TimeSpan.FromSeconds(30),
+                ClockSkew =
+                    TimeSpan.FromSeconds(30),
 
                 NameClaimType = ClaimTypes.Name,
                 RoleClaimType = ClaimTypes.Role
             };
 
+        // Khi JWT hết hạn, đóng kết nối SignalR.
+        // Client sẽ lấy token mới và reconnect.
         options.Events = new JwtBearerEvents
         {
+            // =================================================
+            // SIGNALR ACCESS TOKEN
+            // =================================================
+
+            OnMessageReceived = context =>
+            {
+                // Chỉ nhận access_token từ query string
+                // trên đúng endpoint SignalR.
+                // REST API không nhận JWT từ query string.
+                var path = context.HttpContext.Request.Path;
+
+                if (path.StartsWithSegments("/hubs/chat"))
+                {
+                    var queryToken =
+                        context.Request.Query["access_token"];
+
+                    if (!string.IsNullOrWhiteSpace(queryToken))
+                    {
+                        context.Token = queryToken;
+                    }
+                }
+
+                return Task.CompletedTask;
+            },
+
+            // =================================================
+            // VALIDATE USER SESSION + ROLES
+            // =================================================
+
             OnTokenValidated = async context =>
             {
                 var userIdText = context.Principal?
-                    .FindFirstValue(ClaimTypes.NameIdentifier);
+                    .FindFirstValue(
+                        ClaimTypes.NameIdentifier);
 
                 var sessionIdText = context.Principal?
                     .FindFirstValue("sid");
 
-                if (!Guid.TryParse(userIdText, out var userId) ||
-                    !Guid.TryParse(sessionIdText, out var sessionId))
+                if (!Guid.TryParse(
+                        userIdText,
+                        out var userId) ||
+                    !Guid.TryParse(
+                        sessionIdText,
+                        out var sessionId))
                 {
-                    context.Fail("Invalid user or session ID.");
+                    context.Fail(
+                        "Invalid user or session ID.");
                     return;
                 }
 
-                var db = context.HttpContext.RequestServices
+                var db = context.HttpContext
+                    .RequestServices
                     .GetRequiredService<AppDbContext>();
 
-                // Session phải tồn tại, chưa bị thu hồi
-                // và thuộc User đang hoạt động.
+                // Session phải còn hiệu lực và
+                // tài khoản phải đang hoạt động.
                 var validSession = await db.UserSessions
                     .AsNoTracking()
                     .AnyAsync(
-                        x => x.Id == sessionId &&
-                             x.UserId == userId &&
-                             x.RevokedAtUtc == null &&
-                             x.User.IsActive,
+                        x =>
+                            x.Id == sessionId &&
+                            x.UserId == userId &&
+                            x.RevokedAtUtc == null &&
+                            x.User.IsActive,
                         context.HttpContext.RequestAborted);
 
                 if (!validSession)
                 {
-                    context.Fail("Session revoked or invalid.");
+                    context.Fail(
+                        "Session revoked or invalid.");
                     return;
                 }
 
-                // Không tin Role cũ trong JWT.
+                // Luôn dùng Role đang hoạt động từ DB,
+                // không tin Role cũ bên trong JWT.
                 var roles = await db.UserRoles
                     .AsNoTracking()
                     .Where(x =>
@@ -179,7 +249,8 @@ builder.Services
                 }
 
                 foreach (var claim in identity
-                    .FindAll(ClaimTypes.Role).ToList())
+                    .FindAll(ClaimTypes.Role)
+                    .ToList())
                 {
                     identity.RemoveClaim(claim);
                 }
@@ -187,7 +258,9 @@ builder.Services
                 foreach (var role in roles)
                 {
                     identity.AddClaim(
-                        new Claim(ClaimTypes.Role, role));
+                        new Claim(
+                            ClaimTypes.Role,
+                            role));
                 }
             }
         };
@@ -203,7 +276,9 @@ builder.Services.AddAuthorization();
 // APPLICATION SERVICES
 // =====================================================
 
-builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<
+    IAuthService,
+    AuthService>();
 
 builder.Services.AddScoped<
     IPasswordHasher<User>,
@@ -212,19 +287,41 @@ builder.Services.AddScoped<
 builder.Services.AddSingleton<
     IJwtTokenService,
     JwtTokenService>();
-builder.Services.AddScoped<IUserService, UserService>();
+
+builder.Services.AddScoped<
+    IUserService,
+    UserService>();
+
 builder.Services.AddScoped<
     IFriendRequestService,
     FriendRequestService>();
-// Bước 4.4 - Friendship & Block Management
+
 builder.Services.AddScoped<
     IFriendRelationshipService,
     FriendRelationshipService>();
+
 builder.Services.AddScoped<
-IFriendStatusService,
-FriendStatusService>();
+    IFriendStatusService,
+    FriendStatusService>();
+
 // =====================================================
-// CORS - REACT
+// CONVERSATIONS - PHASE 5
+// =====================================================
+
+builder.Services.AddScoped<
+    IConversationService,
+    ConversationService>();
+
+// =====================================================
+// MESSAGES - PHASE 5.5
+// =====================================================
+
+builder.Services.AddScoped<
+    IMessageService,
+    MessageService>();
+builder.Services.AddSingleton<IPresenceService, PresenceService>();
+// =====================================================
+// CORS - REACT + SIGNALR
 // =====================================================
 
 builder.Services.AddCors(options =>
@@ -234,9 +331,9 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(
                 "http://localhost:5173",
                 "http://127.0.0.1:5173")
-              .AllowAnyHeader()
-              .AllowAnyMethod()
-              .AllowCredentials();
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
@@ -276,7 +373,6 @@ if (app.Environment.IsDevelopment())
 app.UseCors("ReactApp");
 
 app.UseAuthentication();
-
 app.UseAuthorization();
 
 // =====================================================
@@ -284,5 +380,14 @@ app.UseAuthorization();
 // =====================================================
 
 app.MapControllers();
+
+// SignalR endpoint phải yêu cầu đăng nhập.
+app.MapHub<ChatHub>(
+    "/hubs/chat",
+    options =>
+    {
+        options.CloseOnAuthenticationExpiration = true;
+    })
+    .RequireAuthorization();
 
 app.Run();

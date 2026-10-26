@@ -1,3 +1,4 @@
+
 import {
   BrowserRouter,
   Navigate,
@@ -8,10 +9,14 @@ import {
 import { AuthProvider } from "./contexts/AuthProvider";
 import ProtectedRoute from "./routes/ProtectedRoute";
 
+import ChatRealtimeProvider from
+  "./features/realtime/ChatRealtimeProvider";
+
 import LoginPage from "./features/auth/pages/LoginPage";
 import RegisterPage from "./features/auth/pages/RegisterPage";
 
-import MessengerPage from "./features/conversations/MessengerPage";
+import MessengerPage from
+  "./features/conversations/pages/MessengerPage";
 
 import ProfilePage from "./features/users/pages/ProfilePage";
 import UserSearchPage from "./features/users/pages/UserSearchPage";
@@ -20,14 +25,22 @@ import FriendsPage from "./features/friends/pages/FriendsPage";
 
 import MessengerLayout from "./layouts/MessengerLayout";
 
+// =====================================================
+// APPLICATION ROUTES
+// =====================================================
+
 function AppRoutes() {
   return (
     <Routes>
+      {/* ROOT */}
       <Route
         path="/"
-        element={<Navigate to="/messenger" replace />}
+        element={
+          <Navigate to="/messenger" replace />
+        }
       />
 
+      {/* PUBLIC */}
       <Route
         path="/login"
         element={<LoginPage />}
@@ -38,25 +51,35 @@ function AppRoutes() {
         element={<RegisterPage />}
       />
 
-      {/* Chỉ người đã đăng nhập được truy cập */}
+      {/* PROTECTED */}
       <Route element={<ProtectedRoute />}>
-        {/* Sidebar dùng chung cho toàn bộ các trang */}
+        {/* SHARED MESSENGER SIDEBAR */}
         <Route element={<MessengerLayout />}>
+          {/* CONVERSATION LIST */}
           <Route
             path="/messenger"
             element={<MessengerPage />}
           />
 
+          {/* CONVERSATION DETAILS */}
+          <Route
+            path="/messenger/:conversationId"
+            element={<MessengerPage />}
+          />
+
+          {/* PROFILE */}
           <Route
             path="/profile"
             element={<ProfilePage />}
           />
 
+          {/* SEARCH USERS */}
           <Route
             path="/users/search"
             element={<UserSearchPage />}
           />
 
+          {/* FRIENDS */}
           <Route
             path="/friends"
             element={<FriendsPage />}
@@ -64,19 +87,28 @@ function AppRoutes() {
         </Route>
       </Route>
 
+      {/* FALLBACK */}
       <Route
         path="*"
-        element={<Navigate to="/messenger" replace />}
+        element={
+          <Navigate to="/messenger" replace />
+        }
       />
     </Routes>
   );
 }
 
+// =====================================================
+// APPLICATION
+// =====================================================
+
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRoutes />
+        <ChatRealtimeProvider>
+          <AppRoutes />
+        </ChatRealtimeProvider>
       </AuthProvider>
     </BrowserRouter>
   );
